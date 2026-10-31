@@ -36,6 +36,8 @@ If an ARN ending in `oidc-provider/token.actions.githubusercontent.com` appears,
 - a permissions boundary;
 - the role GitHub Actions assumes to deploy. Its trust is pinned to this repository's `production` environment, and it can only touch resources named `attendless-production-*` in this region.
 
+The trust must match the exact subject GitHub puts in its tokens. This repository uses GitHub's immutable subjects, which carry owner and repository IDs. The template's `GitHubSubjectPrefix` default is `repo:umutybaki@56262778/attendless@1439523130`. For another repository, print its prefix with `gh api repos/OWNER/REPO/actions/oidc/customization/sub` and pass it as `GitHubSubjectPrefix`.
+
 ```sh
 aws cloudformation deploy --region eu-central-1 \
   --stack-name attendless-bootstrap \
