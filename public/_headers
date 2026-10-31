@@ -1,0 +1,9 @@
+# Security headers for every static file (Cloudflare Workers static assets).
+# The Content Security Policy lives in index.html, so development and tests enforce the same policy.
+# Permissions-Policy must keep camera=(self): the camera role needs it.
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(self), microphone=(), geolocation=(), payment=(), usb=()

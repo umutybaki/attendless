@@ -63,10 +63,11 @@ The UI talks to rooms only through `public/room.js`:
 
 There are two transports behind that interface:
 
-- **API** (used when `config.js` has an API URL). The Go Lambda in `backend/` creates rooms under a random unused 6-digit code. It issues a host token or a viewer token, and only SHA-256 hashes of tokens are stored.
-  - Polling the API every 2 seconds counts viewers, carries pause, and renews the camera's 12-second lease.
-  - Only the host can claim the camera or end the room. An ended room returns 410 to every session.
-  - Video and links go peer to peer over WebRTC, with links on an unordered data channel that repeats the latest one.
+- **API** (used when `config.js` has an API URL; production uses `/api`). The Cloudflare Worker in `worker/` creates rooms under a random unused 6-digit code, one Durable Object per code. Creating returns the host token, stored only as a SHA-256 hash; joining returns a viewer token, which the room doesn't store at all.
+  - Each page keeps one WebSocket to its room. The room pushes viewer counts and pause to everyone, and relays each viewer's offer to the camera and the answer back. Nobody polls; pings are answered without waking the room.
+  - Only the host token can go live, pause or end the room. An ended or expired room closes every socket with "ended".
+  - A camera whose socket drops stays live for 15 seconds, so a reconnect doesn't hang up its viewers.
+  - Video and links go peer to peer over WebRTC, with links on an unordered data channel that repeats the latest one. Cloudflare's STUN finds addresses; with a TURN key configured, a Cloudflare TURN relay carries the connections that can't be direct.
   - Tokens live in `sessionStorage`, so a reload keeps your role.
 - **Same browser** (no API configured). The room runs over a `BroadcastChannel`, with JPEG frames standing in for video. It's for development and the browser tests.
 
@@ -74,27 +75,26 @@ There are two transports behind that interface:
 
 Aptabase (EU region) runs when `config.js` carries a key (`ATTENDLESS_APTABASE_KEY` at build time, the `APTABASE_APP_KEY` GitHub variable in production).
 
-- **No cookies or storage.** The SDK sets nothing; its session ID lives in memory and resets after an hour idle.
+- **No cookies or storage.** `public/analytics.js` posts to Aptabase's event API directly. Its session ID lives in memory and resets after an hour idle, as in Aptabase's SDK.
 - **Debug data is kept separate.** Demo mode and localhost report as debug data, which the Aptabase dashboard shows apart from real use.
 - **Every event goes through `public/analytics.js`.** `api.spec.js` fails if a room code, token or scanned link ever appears in a payload.
 
-| Event | Who | Properties |
-|---|---|---|
-| `app_opened` | everyone | `lang`, `via` (home, invite, reload) |
-| `room_created` | camera | none |
-| `camera_started` | camera | `zoom`, `torch` (supported or not) |
-| `camera_failed` | camera | `reason` (blocked, missing) |
-| `invite_shared` | anyone | `method` (share, copy), `role` |
-| `first_link_scanned` | camera | `seconds` from camera start |
-| `room_ended` | camera | `minutes`, `links`, `peak_viewers` |
-| `room_joined` | viewer | `via` (code, invite, reload) |
-| `join_failed` | viewer | `via`, `reason` (not_found, unreachable) |
-| `link_opened` | anyone | `action` (open, copy), `role` |
+| Event | Who | When | Properties |
+|---|---|---|---|
+| `room_created` | camera | a new room (not a reload) | `lang` |
+| `camera_failed` | camera | first failure per room | `reason` (blocked, missing) |
+| `invite_shared` | anyone | first share per room | `method` (share, copy), `role` |
+| `room_closed` | camera | the camera leaves the room, once | `how` (end, leave, close, ended), `minutes`, `links`, `peak_viewers`, `first_link_seconds` (if a link was scanned) |
+| `room_joined` | viewer | a join by code or invite (not a reload) | `via` (code, invite), `lang` |
+| `join_failed` | viewer | first failure per visit | `via`, `reason` (not_found, unreachable) |
+| `link_opened` | anyone | first open or copy per room | `action` (open, copy), `role` |
 
-**Volume.** A 10-minute room with 1 camera and 4 viewers sends about 18 events: 6 from the camera and 3 per viewer.
+**Volume.** Aptabase's free plan counts events (20,000 a month), so each event answers one question once. A room with 1 camera and 4 viewers sends about 11 events: 3 from the camera (`room_created`, `invite_shared`, `room_closed`) and 2 per viewer (`room_joined`, `link_opened`). The earlier design sent about 18. At about 1,100 rooms a month of 1 camera and 6 viewers (a busy university), that is about 16,500 events, inside the free plan.
 
-- **Scans are summarized.** Only the first scanned link is an event. Rotating codes would otherwise add one event every few seconds, so the total is reported in `room_ended`.
-- **`room_ended` needs the End button.** It fires only when the host taps End. A camera page that is simply closed leaves no summary, because the room lives on until it expires.
+- **Milestones are summarized.** `room_closed` carries how long the room ran, how many links it sent, when the first one came and the peak audience, replacing separate `camera_started`, `first_link_scanned` and `room_ended` events. Rotating codes would otherwise add one event every few seconds.
+- **Opens are not counted.** There is no `app_opened`: joining or creating already says someone came, and a reload no longer counts as a join.
+- **Repeats are dropped.** A second copy of the same link, a second share or a second typo in one visit sends nothing.
+- **The summary survives closing the tab.** When the page closes, `room_closed` (with `how: close`) goes out with `keepalive`. A reload also closes the page, so a reloaded camera sends one summary per page; `room_created` still counts the room once.
 
 ## Research
 

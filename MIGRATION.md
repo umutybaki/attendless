@@ -2,7 +2,7 @@
 
 The code has been extracted into this repository. AWS resources have **not** been deployed or transferred, and GitHub settings have **not** been changed. Commit and push the two repositories separately, deploying Attendless first.
 
-> **Sections 1, 2 and 4 are superseded by [DEPLOY.md](DEPLOY.md)**, which deploys Attendless in **eu-central-1** (not us-east-1 as below), creates the artifact bucket and deploy role with `infra/bootstrap.yaml`, the certificate with `infra/certificate.yaml`, and sets up `attendless.app`. Rooms are no longer the fixed `313131`: test with **New room** on one device and its code on another. Section 3's cutover order (Attendless first, then the portfolio removal) still applies.
+> **Historical.** This describes moving the service from the portfolio to an AWS deployment. Attendless now runs on Cloudflare: see [DEPLOY.md](DEPLOY.md), which also retires the AWS stacks (step 7). Sections 1, 2 and 4 no longer apply; neither do the AWS details in section 3. Only section 3, steps 5–6 (removing the old service from the portfolio) still apply, after the Cloudflare deployment works.
 
 ## 1. Prepare AWS access
 

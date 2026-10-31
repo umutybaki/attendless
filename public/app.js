@@ -27,8 +27,16 @@ const fresh = () => ({
 const state = fresh()
 let room = null, camera = null, stops = [], wakeLock = null, autoPaused = false
 let armTimer = 0, lostAt = 0, typed = -1
-// The camera's totals for its room, reported once when the room ends.
+// The camera's totals for its room, reported once when the camera leaves it.
 let stats = null
+// Events already sent for the current room, and whether a failed join was reported this page.
+let reported = new Set(), joinFailed = false
+// Aptabase's free plan counts events, so most are sent at most once per room.
+const once = (name, props, options) => {
+  if (reported.has(name)) return
+  reported.add(name)
+  track(name, props, options)
+}
 
 // Reloading keeps you in your room; closing the tab forgets it.
 const memory = {
@@ -231,10 +239,14 @@ async function join(code, token, via) {
     if (!state.unreachable) memory.set(null)
     render()
     buzz([30, 40, 30])
-    track('join_failed', { via, reason: state.unreachable ? 'unreachable' : 'not_found' })
+    // Typos repeat; the first failure per visit is enough to see the problem.
+    if (!joinFailed) track('join_failed', { via, reason: state.unreachable ? 'unreachable' : 'not_found' })
+    joinFailed = true
     return
   }
-  track('room_joined', { via })
+  reported = new Set()
+  // A reload rejoins the same room: not a new join.
+  if (via !== 'reload') track('room_joined', { via, lang: locale })
   state.entry = 'locked'
   render()
   await wait(360)
@@ -293,12 +305,13 @@ async function enterCamera(saved) {
     return render()
   }
   Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !saved })
-  stats = { created: saved?.created ?? Date.now(), started: 0, links: 0, peak: 0 }
+  stats = { created: saved?.created ?? Date.now(), started: 0, links: 0, peak: 0, firstLink: -1 }
+  reported = new Set()
   memory.set({ code: room.code, role: 'camera', token: room.token, created: stats.created })
-  if (!saved) track('room_created')
+  if (!saved) track('room_created', { lang: locale })
   room.addEventListener('viewers', (event) => setViewers(event.detail, state.extra))
   room.addEventListener('ended', () => {
-    exit()
+    exit('ended')
     toast(t.ended)
   })
   if (demo) stops.push(crowd((n) => setViewers(state.viewers, n)))
@@ -327,13 +340,12 @@ async function startCamera() {
     opened = await openCamera({ demo })
   } catch (e) {
     Object.assign(state, { starting: false, cameraError: e.kind ?? 'blocked' })
-    track('camera_failed', { reason: state.cameraError })
+    once('camera_failed', { reason: state.cameraError })
     return render()
   }
   if (state.role !== 'camera') return opened.stop()
   camera = opened
   stats.started ||= Date.now()
-  track('camera_started', { zoom: camera.zooms.length > 0, torch: camera.torch })
   show(camera.stream)
   $('zoom').replaceChildren(...camera.zooms.map((zoom) => {
     const button = Object.assign(document.createElement('button'), { textContent: `${zoom}×` })
@@ -365,8 +377,8 @@ function seen(result) {
   const lock = result.url ? 'link' : 'text'
   const isNew = result.url && result.url !== state.link?.url
   if (isNew) {
-    // Rotating codes produce a link every few seconds, so only the first is an event.
-    if (++stats.links === 1) track('first_link_scanned', { seconds: Math.round((Date.now() - stats.started) / 1000) })
+    // Rotating codes produce a link every few seconds: the summary counts them and times the first.
+    if (++stats.links === 1) stats.firstLink = Math.round((Date.now() - stats.started) / 1000)
     state.link = { url: result.url, scannedAt: Date.now() }
     room.sendLink(state.link)
     flash($('link'))
@@ -423,8 +435,7 @@ async function keepAwake() {
 
 function arm() {
   if (state.armed) {
-    track('room_ended', { minutes: Math.round((Date.now() - stats.created) / 60000), links: stats.links, peak_viewers: stats.peak })
-    return exit(true)
+    return exit('end')
   }
   state.armed = true
   render()
@@ -455,8 +466,19 @@ function openInvite() {
   $('invite-done').focus()
 }
 
-function exit(ending = false) {
-  if (ending) room?.end()
+// One event sums up the camera's room: how it closed, how long it ran, how many
+// links it sent, how many people watched. It replaces an event per milestone.
+function summarize(how) {
+  if (state.role !== 'camera' || !stats) return
+  const props = { how, minutes: Math.round((Date.now() - stats.created) / 60000), links: stats.links, peak_viewers: stats.peak }
+  if (stats.firstLink >= 0) props.first_link_seconds = stats.firstLink
+  once('room_closed', props, { closing: how === 'close' })
+}
+
+// how: 'end' (the End button), 'leave' (the close button), 'ended' (the server closed the room).
+function exit(how = 'leave') {
+  summarize(how)
+  if (how === 'end') room?.end()
   else room?.leave?.()
   stops.forEach((stop) => stop())
   camera?.stop()
@@ -502,20 +524,20 @@ $('zoom').addEventListener('click', async (event) => {
   } catch { /* Unsupported step. */ }
   render()
 })
-$('link-open').addEventListener('click', () => track('link_opened', { action: 'open', role: state.role }))
+$('link-open').addEventListener('click', () => once('link_opened', { action: 'open', role: state.role }))
 $('link-copy').addEventListener('click', () => {
   if (!state.link) return
-  track('link_opened', { action: 'copy', role: state.role })
+  once('link_opened', { action: 'copy', role: state.role })
   copyText(state.link.url)
 })
 $('invite-copy').addEventListener('click', () => {
-  track('invite_shared', { method: 'copy', role: state.role })
+  once('invite_shared', { method: 'copy', role: state.role })
   copyText(inviteUrl())
 })
 $('invite-share').addEventListener('click', async () => {
   const data = { title, text: fill(t.shareText, { code: spaced(state.code) }), url: inviteUrl() }
   const share = Boolean(navigator.canShare?.(data))
-  track('invite_shared', { method: share ? 'share' : 'copy', role: state.role })
+  once('invite_shared', { method: share ? 'share' : 'copy', role: state.role })
   if (share) return navigator.share(data).catch(() => {})
   copyText(data.url)
 })
@@ -560,7 +582,11 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 // Leaving frees the camera slot or viewer seat now; a reload restores the room from memory.
-window.addEventListener('pagehide', () => room?.leave())
+// The summary goes out with keepalive; a reload sends one too and the restored page starts a new one.
+window.addEventListener('pagehide', () => {
+  summarize('close')
+  room?.leave()
+})
 window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload() })
 
 // ---------- Start: restore a room, follow an invite link, or show the keypad ----------
@@ -573,7 +599,6 @@ if (params.has('room')) {
   history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}`)
 }
 const restoring = /^\d{6}$/.test(saved?.code ?? '') && ['camera', 'viewer'].includes(saved.role)
-track('app_opened', { lang: locale, via: restoring ? 'reload' : invited.length === 6 ? 'invite' : 'home' })
 if (restoring && saved.role === 'camera') void enterCamera(saved)
 else if (restoring) void join(saved.code, saved.token, 'reload')
 else if (invited.length === 6) void join(invited, '', 'invite')

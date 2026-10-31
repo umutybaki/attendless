@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // One Worker serves the static site from dist/ and the room API under /api/.
+  // Static files are served without running the Worker, so they cost nothing.
+  "name": "attendless",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  // One Durable Object per room code. SQLite-backed classes are the ones the free plan allows.
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // Served at attendless.<account>.workers.dev; scripts/deploy.sh adds the custom
+  // domain (DOMAIN_NAME) and www, whose DNS records and certificate Cloudflare manages.
+  "workers_dev": true,
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+  // Secrets, uploaded by scripts/deploy.sh when set (they enable TURN): TURN_KEY_ID, TURN_KEY_API_TOKEN.
+}

@@ -25,3 +25,9 @@ test('ICE waits for gathering and removes the listener', async () => {
   await ready
   await gatherICE(pc)
 })
+test('ICE goes ahead with the candidates it has when gathering stalls, and fails with none', async () => {
+  const stalled = Object.assign(new EventTarget(), { iceGatheringState: 'gathering', localDescription: { sdp: 'v=0\r\na=candidate:1 1 udp 1 192.0.2.1 5000 typ host\r\n' } })
+  await gatherICE(stalled, 10)
+  const empty = Object.assign(new EventTarget(), { iceGatheringState: 'gathering', localDescription: { sdp: 'v=0\r\n' } })
+  await assert.rejects(gatherICE(empty, 10), /ICE timeout/)
+})

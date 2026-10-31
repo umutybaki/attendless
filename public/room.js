@@ -2,9 +2,10 @@ import { gatherICE, safeQRLink } from './rtc.js'
 import { relay, framePlayer } from './camera.js'
 
 // Two transports behind one interface. With an API configured (config.js),
-// rooms live on the backend and video and links travel peer to peer over
-// WebRTC. Without one, rooms travel over a BroadcastChannel between tabs of
-// this browser, which is enough to develop and test the UI.
+// rooms live in a Cloudflare Durable Object reached over one WebSocket per
+// page, and video and links travel peer to peer over WebRTC. Without one,
+// rooms travel over a BroadcastChannel between tabs of this browser, which is
+// enough to develop and test the UI.
 //
 //   await hostRoom(saved?)       -> { code, token, publish(stream, video), setState({ paused }),
 //                                     sendLink(link), end(), leave() }; events: 'viewers', 'ended'
@@ -25,6 +26,14 @@ class Room extends EventTarget {
 
 // ---------- API transport ----------
 
+// The camera's stream to each viewer. Viewers only need to see the scene: the
+// link arrives separately and the camera reads codes from its full-resolution
+// capture, so the stream stays small. Bandwidth adaptation lowers the frame
+// rate before the resolution.
+const VIDEO = { maxBitrate: 400_000, maxFramerate: 15 }
+const STUN = [{ urls: 'stun:stun.cloudflare.com:3478' }]
+const epochId = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
+
 class APIError extends Error {
   constructor(status) {
     super(`API ${status}`)
@@ -32,98 +41,138 @@ class APIError extends Error {
   }
 }
 const gone = (e) => e instanceof APIError && [401, 404, 410].includes(e.status)
-const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }]
+const endpoint = (path) => new URL(path, new URL(api.endsWith('/') ? api : `${api}/`, location.href))
 
-async function call(action, data = {}, token = '', keepalive = false) {
-  const response = await fetch(api, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify({ action, ...data }),
-    signal: keepalive ? undefined : AbortSignal.timeout(12000),
-    cache: 'no-store',
-    keepalive,
-  })
+async function post(path) {
+  const response = await fetch(endpoint(path), { method: 'POST', signal: AbortSignal.timeout(12000), cache: 'no-store' })
   if (!response.ok) throw new APIError(response.status)
   return response.json()
 }
 
-// The camera: holds the sharing lease and answers each viewer's offer.
+// One WebSocket to the room that says hello with the token, reconnects with
+// backoff, and pings so a dead connection is noticed. The server answers
+// pings without waking the room, so they cost nothing.
+class Line {
+  constructor(code, token, handlers) {
+    Object.assign(this, { code, token, handlers, ws: null, ready: false, closed: false, attempt: 0 })
+    this.wake = () => { if (!document.hidden && !this.ws && !this.closed) this.connect() }
+    document.addEventListener('visibilitychange', this.wake)
+    window.addEventListener('online', this.wake)
+    this.connect()
+  }
+  connect() {
+    clearTimeout(this.retry)
+    const url = endpoint(`rooms/${this.code}/socket`)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = (this.ws = new WebSocket(url))
+    let answered = true
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'hello', token: this.token }))
+      this.pinger = setInterval(() => {
+        // No pong since the last ping: the connection is dead even if the browser hasn't noticed.
+        if (!answered) return ws.close(4000, 'No pong')
+        answered = false
+        ws.send('ping')
+      }, 25000)
+    }
+    ws.onmessage = ({ data }) => {
+      answered = true
+      if (data === 'pong') return
+      let message
+      try { message = JSON.parse(data) } catch { return }
+      if (message.type === 'welcome') {
+        this.ready = true
+        this.attempt = 0
+      }
+      this.handlers.message(message)
+    }
+    ws.onclose = ({ code }) => {
+      clearInterval(this.pinger)
+      if (this.ws !== ws) return
+      this.ws = null
+      this.ready = false
+      if (this.closed) return
+      if (code === 4410 || code === 4409 || code === 4400) {
+        this.close()
+        return this.handlers.gone()
+      }
+      this.handlers.down?.()
+      const delay = Math.min(15000, 500 * 2 ** this.attempt++) * (0.75 + Math.random() / 2)
+      this.retry = setTimeout(() => this.connect(), document.hidden ? Math.max(delay, 5000) : delay)
+    }
+  }
+  send(message) {
+    if (this.ready && this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message))
+  }
+  close() {
+    this.closed = true
+    clearTimeout(this.retry)
+    document.removeEventListener('visibilitychange', this.wake)
+    window.removeEventListener('online', this.wake)
+    const ws = this.ws
+    this.ws = null
+    // Messages sent just before are delivered ahead of the close.
+    if (ws?.readyState === WebSocket.OPEN) ws.close(1000)
+    else if (ws) ws.onopen = () => ws.close(1000)
+  }
+}
+
+// The camera: announces its stream and answers each viewer's offer.
 class ApiHost extends Room {
   static async open(saved) {
-    const { code, token } = saved?.token ? saved : await call('create')
-    const room = new ApiHost(code, token)
-    room.timers = [
-      setInterval(() => void room.tick(), pollEvery),
-      // Links go over an unordered, lossy channel, so the latest one repeats.
-      setInterval(() => room.sendLink(room.link), 500),
-    ]
-    void room.tick()
-    return room
+    const { code, token } = saved?.token ? saved : await post('rooms')
+    return new ApiHost(code, token)
   }
   constructor(code, token) {
     super()
-    Object.assign(this, { code, token, epoch: '', paused: false, link: null, stream: null, viewers: 0 })
+    Object.assign(this, { code, token, epoch: '', paused: false, link: null, stream: null, viewers: 0, iceServers: STUN })
     this.peers = new Map()
-    this.answered = new Map()
     this.channels = new Set()
+    this.line = new Line(code, token, {
+      message: (message) => this.receive(message),
+      gone: () => { this.close(); this.emit('ended') },
+    })
+    // Links go over an unordered, lossy channel, so the latest one repeats.
+    this.timer = setInterval(() => this.sendLink(this.link), 500)
   }
+  receive(message) {
+    if (message.type === 'welcome') {
+      this.iceServers = message.iceServers?.length ? message.iceServers : STUN
+      this.count(message.state.viewers)
+      // After a reconnect, restore what the room should show.
+      if (this.epoch) this.announce()
+    } else if (message.type === 'state') this.count(message.state.viewers)
+    else if (message.type === 'offer') void this.answer(message)
+    else if (message.type === 'gone') this.drop(message.peer)
+  }
+  // A new stream is a new generation: viewers connect to it afresh.
   publish(stream) {
     this.stream = stream
-    void this.claim()
-  }
-  async claim() {
-    try {
-      const { epoch } = await call('claim', {}, this.token)
-      this.hangUp()
-      this.epoch = epoch
-    } catch (e) {
-      this.fail(e)
-    }
+    this.hangUp()
+    this.epoch = epochId()
+    this.announce()
   }
   setState({ paused }) {
     this.paused = Boolean(paused)
-    void this.tick()
+    this.announce()
   }
-  async tick() {
-    if (this.running || this.closed) return
-    this.running = true
-    try {
-      if (this.epoch) {
-        this.count((await call('heartbeat', { epoch: this.epoch, paused: this.paused }, this.token)).viewers)
-        const { peers } = await call('peers', { epoch: this.epoch }, this.token)
-        // Answers gather ICE independently so they cannot delay lease renewal.
-        for (const peer of peers) void this.answer(peer)
-      } else this.count((await call('status', {}, this.token)).viewers)
-    } catch (e) {
-      this.fail(e)
-    } finally {
-      this.running = false
-    }
-  }
-  fail(e) {
-    if (this.closed) return
-    if (gone(e)) {
-      this.close()
-      this.emit('ended')
-    } else if (e instanceof APIError && e.status === 409 && this.stream) {
-      // The lease lapsed while the page was throttled or asleep: take it back.
-      this.epoch = ''
-      void this.claim()
-    }
+  announce() {
+    this.line.send({ type: 'live', epoch: this.epoch, paused: this.paused })
   }
   count(viewers) {
     if (viewers === this.viewers) return
     this.viewers = viewers
     this.emit('viewers', viewers)
   }
-  async answer({ peer, offer }) {
-    const existing = this.peers.get(peer)
-    if (!existing && this.answered.get(peer) === offer) return
-    if (existing && (existing.remoteDescription?.sdp === offer || !existing.remoteDescription)) return
-    existing?.close()
+  drop(peer) {
+    this.peers.get(peer)?.close()
     this.peers.delete(peer)
-    if (!this.stream) return
-    const epoch = this.epoch, pc = new RTCPeerConnection({ iceServers })
+  }
+  async answer({ peer, sdp: offer }) {
+    // A repeated offer from the same viewer replaces its connection.
+    this.drop(peer)
+    if (!this.stream || typeof offer !== 'string') return
+    const epoch = this.epoch, pc = new RTCPeerConnection({ iceServers: this.iceServers })
     this.peers.set(peer, pc)
     pc.onconnectionstatechange = () => {
       if (['failed', 'closed'].includes(pc.connectionState) && this.peers.get(peer) === pc) this.peers.delete(peer)
@@ -137,16 +186,15 @@ class ApiHost extends Room {
       for (const track of this.stream.getVideoTracks()) {
         const sender = pc.addTrack(track, this.stream)
         const params = sender.getParameters()
-        params.encodings = (params.encodings?.length ? params.encodings : [{}]).map((encoding) => ({ ...encoding, maxFramerate: 30, maxBitrate: 1000000 }))
+        params.encodings = (params.encodings?.length ? params.encodings : [{}]).map((encoding) => ({ ...encoding, ...VIDEO }))
         params.degradationPreference = 'maintain-resolution'
         await sender.setParameters(params)
       }
       await pc.setRemoteDescription({ type: 'offer', sdp: offer })
       await pc.setLocalDescription(await pc.createAnswer())
       await gatherICE(pc)
-      if (epoch !== this.epoch || this.closed) return pc.close()
-      await call('answer', { epoch, peer, offer, sdp: pc.localDescription.sdp }, this.token)
-      this.answered.set(peer, offer)
+      if (epoch !== this.epoch || this.closed || this.peers.get(peer) !== pc) return pc.close()
+      this.line.send({ type: 'answer', peer, epoch, sdp: pc.localDescription.sdp })
     } catch {
       pc.close()
       if (this.peers.get(peer) === pc) this.peers.delete(peer)
@@ -163,21 +211,23 @@ class ApiHost extends Room {
     this.peers.forEach((pc) => pc.close())
     this.channels.forEach((channel) => channel.close())
     this.peers.clear()
-    this.answered.clear()
     this.channels.clear()
   }
   close() {
     this.closed = true
-    this.timers?.forEach(clearInterval)
+    clearInterval(this.timer)
+    this.line.close()
     this.hangUp()
   }
-  // Leaving the page frees the camera slot at once instead of after the lease lapses.
+  // Leaving the page takes the camera off the air at once; the room stays for a reload.
   leave() {
-    if (this.epoch && !this.closed) void call('release', { epoch: this.epoch }, this.token, true).catch(() => {})
+    if (this.closed) return
+    this.line.send({ type: 'live', epoch: '', paused: false })
     this.close()
   }
   end() {
-    if (!this.closed) void call('end', {}, this.token, true).catch(() => {})
+    if (this.closed) return
+    this.line.send({ type: 'end' })
     this.close()
   }
 }
@@ -185,54 +235,81 @@ class ApiHost extends Room {
 class ApiViewer extends Room {
   static async open(code, token) {
     try {
-      token ||= (await call('join', { code })).token
-      const room = new ApiViewer(code, token)
-      room.welcomed = { state: await call('status', {}, token), link: null }
-      return room
+      token ||= (await post(`rooms/${code}/join`)).token
     } catch (e) {
       if (gone(e)) return null
       throw e
     }
+    const room = new ApiViewer(code, token)
+    const state = await room.welcome
+    if (!state) return null
+    room.welcomed = { state, link: null }
+    return room
   }
   constructor(code, token) {
     super()
-    Object.assign(this, { code, token, epoch: '', pc: null, stream: null, scannedAt: 0, failures: 0 })
-  }
-  start() {
-    this.timer = setInterval(() => void this.tick(), pollEvery)
-    void this.adopt(this.welcomed.state).catch(() => {})
-  }
-  async tick() {
-    if (this.running || this.closed) return
-    this.running = true
-    try {
-      const state = await call('status', {}, this.token)
-      this.failures = 0
-      this.emit('state', state)
-      await this.adopt(state)
-    } catch (e) {
-      if (gone(e)) {
+    Object.assign(this, { code, token, epoch: '', pc: null, stream: null, scannedAt: 0, last: null, started: false, iceServers: STUN })
+    // Settles with the first welcome (the room's state), null if the room is gone,
+    // or an error if the room can't be reached at all.
+    this.welcome = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { this.close(); reject(new Error('Unreachable')) }, 12000)
+      this.settle = (value, error) => { clearTimeout(timeout); this.settle = null; error ? reject(error) : resolve(value) }
+    })
+    this.line = new Line(code, token, {
+      message: (message) => this.message(message),
+      gone: () => {
+        if (this.settle) return this.settle(null)
         this.close()
         this.emit('ended')
-      } else if (++this.failures >= 2) this.emit('state', { ...this.last, live: false, offline: true })
-    } finally {
-      this.running = false
+      },
+      down: () => {
+        if (this.settle) { this.close(); return this.settle(null, new Error('Unreachable')) }
+        clearTimeout(this.offline)
+        // A short blip is not worth a warning; the video keeps flowing peer to peer.
+        this.offline = setTimeout(() => { if (!this.line.ready) this.emit('state', { ...this.last, live: false, offline: true }) }, 4000)
+      },
+    })
+  }
+  message(message) {
+    if (message.type === 'welcome') {
+      this.iceServers = message.iceServers?.length ? message.iceServers : STUN
+      clearTimeout(this.offline)
+      if (this.settle) return this.settle(message.state)
+      this.update(message.state)
+    } else if (message.type === 'state') this.update(message.state)
+    else if (message.type === 'answer') void this.answered(message)
+    else if (message.type === 'ended') {
+      this.close()
+      this.emit('ended')
     }
   }
-  async adopt(state) {
+  start() {
+    this.started = true
+    this.update(this.last ?? this.welcomed.state)
+  }
+  update(state) {
     this.last = state
-    if (!state.live) return this.hangUp()
-    if (state.epoch !== this.epoch) return this.watch(state.epoch)
+    if (!this.started) return
+    this.emit('state', state)
+    this.adopt(state)
+  }
+  adopt(state) {
+    if (!state?.live) return this.hangUp()
+    if (state.epoch !== this.epoch) void this.watch(state.epoch)
+  }
+  async answered({ epoch, sdp }) {
     const pc = this.pc
-    if (pc && !pc.remoteDescription) {
-      const { answer } = await call('connection', { epoch: this.epoch }, this.token)
-      if (answer && this.pc === pc) await pc.setRemoteDescription({ type: 'answer', sdp: answer })
+    if (!pc || epoch !== this.epoch || pc.remoteDescription) return
+    try {
+      await pc.setRemoteDescription({ type: 'answer', sdp })
+    } catch {
+      if (this.pc === pc) this.hangUp()
     }
   }
   async watch(epoch) {
     this.hangUp()
     this.epoch = epoch
-    const pc = (this.pc = new RTCPeerConnection({ iceServers }))
+    const pc = (this.pc = new RTCPeerConnection({ iceServers: this.iceServers }))
     const channel = pc.createDataChannel('qr', { ordered: false, maxRetransmits: 0 })
     channel.onmessage = (event) => this.receive(event.data)
     pc.addTransceiver('video', { direction: 'recvonly' })
@@ -241,14 +318,25 @@ class ApiViewer extends Room {
       this.stream = event.streams[0] ?? new MediaStream([event.track])
       this.emit('stream', this.stream)
     }
-    // A failed connection is dropped; the next poll offers again.
-    pc.onconnectionstatechange = () => { if (this.pc === pc && pc.connectionState === 'failed') this.hangUp() }
+    // A failed connection, or an offer nobody answered (the camera was away), starts over.
+    const again = (delay) => {
+      clearTimeout(this.again)
+      this.again = setTimeout(() => {
+        if (this.pc !== pc || this.closed) return
+        this.hangUp()
+        this.adopt(this.last)
+      }, delay)
+    }
+    pc.onconnectionstatechange = () => { if (this.pc === pc && pc.connectionState === 'failed') again(2000) }
     try {
       await pc.setLocalDescription(await pc.createOffer())
       await gatherICE(pc)
-      if (this.pc === pc) await call('offer', { epoch, sdp: pc.localDescription.sdp }, this.token)
+      if (this.pc !== pc) return
+      this.line.send({ type: 'offer', epoch, sdp: pc.localDescription.sdp })
+      again(15000)
+      pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected' && this.pc === pc) clearTimeout(this.again) })
     } catch {
-      if (this.pc === pc) this.hangUp()
+      if (this.pc === pc) again(2000)
     }
   }
   receive(data) {
@@ -260,13 +348,15 @@ class ApiViewer extends Room {
     } catch { /* Ignore invalid peer messages. */ }
   }
   hangUp() {
+    clearTimeout(this.again)
     this.pc?.close()
     this.pc = null
     this.epoch = ''
   }
   close() {
     this.closed = true
-    clearInterval(this.timer)
+    clearTimeout(this.offline)
+    this.line.close()
     this.hangUp()
   }
   leave() {
