@@ -1,187 +1,124 @@
 # Deploying Attendless
 
-First deployment, start to finish, including `attendless.app` on Cloudflare. Steps marked **(once)** are never repeated. After that, every merge to `main` deploys automatically.
+Attendless runs entirely on Cloudflare: one Worker serves the site and the room API, and each room is a Durable Object. Steps marked **(once)** are never repeated. After that, every merge to `main` deploys automatically.
 
-You need: AWS CLI v2, an AWS identity that can create IAM roles (an administrator), access to the Cloudflare dashboard for `attendless.app`, and admin access to the GitHub repository.
+You need: the Cloudflare account that holds the `attendless.app` zone, admin access to the GitHub repository, and Node 22+ if you want to deploy from your machine.
 
-**Regions.** Attendless runs in **eu-central-1 (Frankfurt)**, the closest AWS region to its users in Turkey. That covers the API, the room database, the site files and the deploy setup.
+## What it costs
 
-- **The certificate is the one exception.** CloudFront only accepts TLS certificates issued in **us-east-1**, so the certificate gets its own small stack there. It holds no data and costs nothing.
-- **CloudFront itself is global.** It serves visitors from edge locations near them. Its `PriceClass_100` includes the "Europe, Israel, and Türkiye" pricing region, and CloudFront has an edge location in Istanbul.
+| | Price | At a busy university (≈ 1,100 rooms a month) |
+|---|---|---|
+| Worker, Durable Objects, static files | Workers **Free** plan: 100,000 requests a day each, 13,000 GB-s a day of Durable Object compute. Static files are free and unlimited. | About 1% of the daily limits: **$0** |
+| TURN relay (optional) | First 1,000 GB a month free, then $0.05/GB | About 90 GB a month: **$0** |
+| Aptabase analytics (optional) | Free up to 20,000 events a month | About 16,500 events: **$0** |
+| `attendless.app` | Domain renewal | about $14 a year |
 
-## 1. Sign in to AWS
+On the Free plan, nothing on the Worker side can bill: once a daily limit is reached, requests fail until 00:00 UTC (03:00 in Turkey). Roughly 5,000 rooms a day fit (see [worker/README.md](worker/README.md#cost)). If usage ever gets close, upgrade to Workers Paid ($5 a month, 10 million Worker and 1 million Durable Object requests included); no code changes.
 
-```sh
-aws login
-aws sts get-caller-identity
-```
+## 1. Create a deploy token (once)
 
-Use the account you want Attendless in. Each command below passes `--region` explicitly.
+1. In the Cloudflare dashboard, go to **Manage account → Account API tokens** and select **Create Token**.
+2. Choose the **Edit Cloudflare Workers** template.
+3. Under **Account resources**, pick your account. Under **Zone resources**, pick **Specific zone → attendless.app** (the template's Workers Routes permission lets the deploy attach the domain).
+4. Create the token and copy it. It's shown once.
+5. Copy your **Account ID** too: it's on the account's home page, or in the URL after `dash.cloudflare.com/`.
+6. Make sure the account has a `workers.dev` subdomain: open **Workers & Pages**. If **Your subdomain** shows one (`<name>.workers.dev`), you're done; otherwise set one there. Wrangler asks for it on a first deploy, and in GitHub Actions nobody can answer, so the deploy would fail.
 
-## 2. Find out whether GitHub's OIDC provider exists (once)
+## 2. Turn on the TURN relay (once, recommended)
 
-An AWS account can have only one `token.actions.githubusercontent.com` provider. Your portfolio may already use it. The provider is global, so the region doesn't matter here.
+Without TURN, viewers on networks that block direct connections (some campus and corporate Wi-Fi, some mobile carriers) can't connect. With it, only those connections are relayed.
 
-```sh
-aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text
-```
+1. In the Cloudflare dashboard, go to **Realtime → TURN Server** and select **Create**.
+2. Name it `attendless` and create it. Copy the **Turn Token ID** and the **API Token**.
 
-If an ARN ending in `oidc-provider/token.actions.githubusercontent.com` appears, keep it for the next step. Otherwise, leave the parameter empty and the bootstrap creates it.
+The Worker turns them into short-lived credentials for each room; the browser never sees the key. To watch usage, the TURN page shows traffic per key.
 
-## 3. Deploy the bootstrap stack in Frankfurt (once)
+## 3. Configure GitHub (once)
 
-[`infra/bootstrap.yaml`](infra/bootstrap.yaml) creates:
+In **umutybaki/attendless → Settings → Environments → production** (create it if it doesn't exist; restrict deployment branches to `main`):
 
-- the private bucket for Lambda packages;
-- a permissions boundary;
-- the role GitHub Actions assumes to deploy. Its trust is pinned to this repository's `production` environment, and it can only touch resources named `attendless-production-*` in this region.
-
-The trust must match the exact subject GitHub puts in its tokens. This repository uses GitHub's immutable subjects, which carry owner and repository IDs. The template's `GitHubSubjectPrefix` default is `repo:umutybaki@56262778/attendless@1439523130`. For another repository, print its prefix with `gh api repos/OWNER/REPO/actions/oidc/customization/sub` and pass it as `GitHubSubjectPrefix`.
-
-```sh
-aws cloudformation deploy --region eu-central-1 \
-  --stack-name attendless-bootstrap \
-  --template-file infra/bootstrap.yaml \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides GitHubOidcProviderArn=PASTE_ARN_FROM_STEP_2_OR_LEAVE_EMPTY
-
-aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-bootstrap \
-  --query 'Stacks[0].Outputs[].[Description,OutputValue]' --output table
-```
-
-Keep the outputs: they become GitHub variables in step 5.
-
-## 4. Issue the certificate in us-east-1 and validate it in Cloudflare (once)
-
-[`infra/certificate.yaml`](infra/certificate.yaml) requests a certificate for `attendless.app` and `www.attendless.app`:
-
-```sh
-aws cloudformation deploy --region us-east-1 \
-  --stack-name attendless-certificate \
-  --template-file infra/certificate.yaml
-```
-
-The command will appear to hang. **This is expected.** The certificate waits for DNS validation, so keep it running. In another terminal, print the validation records:
-
-```sh
-aws acm list-certificates --region us-east-1 \
-  --query "CertificateSummaryList[?DomainName=='attendless.app'].CertificateArn" --output text
-aws acm describe-certificate --region us-east-1 --certificate-arn PASTE_ARN \
-  --query 'Certificate.DomainValidationOptions[].ResourceRecord' --output table
-```
-
-In Cloudflare, open **attendless.app → DNS → Records** and add each record as:
-
-- **Type:** CNAME
-- **Name:** the record's `Name`, without the trailing dot
-- **Target:** its `Value`
-- **Proxy status:** **DNS only** (grey cloud)
-
-The two names can share a record. If Cloudflare reports a duplicate, one record is enough.
-
-Validation usually takes a few minutes, after which the deploy command finishes. Leave these records in place: ACM uses them to renew the certificate. If the zone has CAA records, one of them must allow `amazon.com`.
-
-Print the certificate's ARN for step 8:
-
-```sh
-aws cloudformation describe-stacks --region us-east-1 --stack-name attendless-certificate \
-  --query "Stacks[0].Outputs[?OutputKey=='CertificateArn'].OutputValue" --output text
-```
-
-## 5. Configure GitHub (once)
-
-1. In **umutybaki/attendless → Settings → Environments**, create `production`.
-2. Under **Deployment branches and tags**, choose **Selected branches and tags** and add `main`.
-3. Add these environment variables:
-
-   | Variable | Value |
-   |---|---|
-   | `AWS_DEPLOY_ROLE_ARN` | `DeployRoleArn` output (step 3) |
-   | `DEPLOYMENT_BUCKET` | `DeploymentBucket` output (step 3) |
-   | `ROLE_BOUNDARY_ARN` | `RoleBoundaryArn` output (step 3) |
-   | `AWS_REGION` | `eu-central-1` |
-
-   Leave `DOMAIN_NAME` and `CERTIFICATE_ARN` unset for now. The first deploy uses the CloudFront hostname, because the domain can't point anywhere until the distribution exists.
+| Kind | Name | Value |
+|---|---|---|
+| Secret | `CLOUDFLARE_API_TOKEN` | the token from step 1 |
+| Variable | `CLOUDFLARE_ACCOUNT_ID` | the account ID from step 1 |
+| Secret | `TURN_KEY_ID` | Turn Token ID from step 2 |
+| Secret | `TURN_KEY_API_TOKEN` | API Token from step 2 |
+| Variable | `DOMAIN_NAME` | `attendless.app` (leave unset to deploy on `workers.dev` only) |
+| Variable | `APTABASE_APP_KEY` | optional, an EU Aptabase app key (`A-EU-…`) |
 
 The same from a terminal:
 
 ```sh
-gh api -X PUT repos/umutybaki/attendless/environments/production \
-  -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
-gh api -X POST repos/umutybaki/attendless/environments/production/deployment-branch-policies -f name=main
-gh variable set AWS_DEPLOY_ROLE_ARN --env production --body 'arn:aws:iam::…'
-gh variable set DEPLOYMENT_BUCKET   --env production --body 'attendless-bootstrap-artifactbucket-…'
-gh variable set ROLE_BOUNDARY_ARN   --env production --body 'arn:aws:iam::…:policy/…'
-gh variable set AWS_REGION          --env production --body eu-central-1
+gh secret set CLOUDFLARE_API_TOKEN --env production
+gh variable set CLOUDFLARE_ACCOUNT_ID --env production --body 'PASTE_ACCOUNT_ID'
+gh secret set TURN_KEY_ID --env production
+gh secret set TURN_KEY_API_TOKEN --env production
+gh variable set DOMAIN_NAME --env production --body attendless.app
 ```
 
-## 6. First deploy
+If the AWS variables from the old deployment exist (`AWS_DEPLOY_ROLE_ARN`, `DEPLOYMENT_BUCKET`, `ROLE_BOUNDARY_ARN`, `AWS_REGION`, `CERTIFICATE_ARN`), delete them; nothing reads them now.
 
-Open a pull request from `codex/extract-attendless` to `main`. CI runs the Node, Go, browser and cfn-lint checks. Merge it once they pass; the merge to `main` deploys.
+## 4. Free the domain's DNS records (once)
 
-The deploy job:
+Cloudflare creates the DNS records and certificate for `attendless.app` and `www.attendless.app` itself, but it can't over an existing record. In Cloudflare, open **attendless.app → DNS → Records** and delete any A, AAAA or CNAME records for `@` and `www`, such as the CNAMEs to `…cloudfront.net` from the AWS deployment or a parking page. Keep everything else (mail records, and the ACM validation CNAMEs until step 7).
 
-1. builds and uploads the Lambda;
-2. deploys the `attendless-production` stack in eu-central-1 (the first run takes 10–20 minutes, mostly CloudFront);
-3. uploads the site and invalidates the CloudFront cache;
-4. runs [`scripts/smoke.mjs`](scripts/smoke.mjs) against the live site. It creates, joins and ends one real room.
+The site is down between this step and the deploy, a few minutes. To avoid that, deploy once with `DOMAIN_NAME` unset, test on the `workers.dev` address from the log, then delete the records, set `DOMAIN_NAME` and rerun the workflow.
 
-The log ends with `Attendless deployed: https://dxxxxxxxx.cloudfront.net`.
+## 5. Deploy
 
-## 7. Point attendless.app at CloudFront (once)
+Merge the pull request. The workflow runs the unit tests, the browser tests (including the real Worker in local workerd) and a Wrangler dry run, then the deploy job:
 
-Get the distribution hostname:
+1. builds the site with the API at `/api`;
+2. runs `wrangler deploy`, uploading the TURN secrets and attaching the domain and its `www`;
+3. runs [`scripts/smoke.mjs`](scripts/smoke.mjs) against the live site: headers, configuration, a refused foreign origin, and one real room created, joined over WebSockets and ended. It says whether TURN is on.
 
-```sh
-aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-production \
-  --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" --output text
-```
+The log ends with `Attendless deployed: https://attendless.app`. A new custom domain can take a minute or two to get its certificate; the smoke check waits for it. To rerun: **Actions → Test and deploy Attendless → Run workflow → main**.
 
-In Cloudflare DNS, add two records. Both are **CNAME**, **DNS only (grey cloud)**, with the target `dxxxxxxxx.cloudfront.net`:
+## 6. Check it on real devices
 
-- Name `@`. Cloudflare flattens a CNAME on the apex, so this works.
-- Name `www`.
-
-Delete any existing A, AAAA or CNAME records for `@` and `www` first, such as a parking page.
-
-**Keep the proxy off.** With the orange cloud, Cloudflare puts a second CDN and TLS hop in front of CloudFront, and that interferes with how CloudFront recognizes the domain. If you want Cloudflare features later, plan that separately.
-
-## 8. Switch the site to the domain
-
-Add two more `production` variables:
-
-| Variable | Value |
-|---|---|
-| `DOMAIN_NAME` | `attendless.app` |
-| `CERTIFICATE_ARN` | the us-east-1 certificate ARN from step 4 |
-
-Optionally, add `APTABASE_APP_KEY` (an EU Aptabase app key, `A-EU-…`) to turn on analytics. See [DESIGN.md](DESIGN.md#analytics) for what's sent.
-
-Then rerun the deploy: **Actions → Test and deploy Attendless → Run workflow → main**. This run:
-
-- adds `attendless.app` and `www.attendless.app` to CloudFront with the certificate;
-- allows both origins in the API's CORS;
-- runs the smoke test against `https://attendless.app`.
-
-## 9. Check it on real devices
-
-Mocked tests don't prove camera permissions or real network traversal, so do this once by hand:
+Mocked tests don't prove camera permissions or real networks, so do this once by hand ([the full list](worker/README.md#manual-acceptance-check)):
 
 1. On a phone, open `https://attendless.app` and tap **New room**. Allow the camera, then share the invite.
 2. Join from a second phone and from a laptop, using the code and the invite link.
-3. Show a QR code on another screen. Both viewers should get the link within about a second, with a ticking age. Show a second QR code and check that the link updates.
-4. Try **Pause**, a reload on each device, and **End** (two taps). Viewers should see each state.
-5. Repeat on mobile data from Turkish carriers. There is no TURN relay, so some restrictive networks (strict corporate or campus Wi-Fi) can't connect directly.
+3. Show a QR code on another screen. Both viewers should get the link within about a second, with a ticking age. Show a second code and check the link updates.
+4. Try **Pause**, a reload on each device, switching the camera phone's network off and on for a few seconds, and **End** (two taps).
+5. Repeat on Turkish mobile data and on a restrictive Wi-Fi network; with TURN on, both should connect.
+
+## 7. Retire the AWS deployment (once, if it was deployed)
+
+After step 6 passes. The stacks retain some resources on purpose, so delete those explicitly:
+
+```sh
+# The app: empty the site bucket first, or the stack can't delete it.
+SITE_BUCKET=$(aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-production \
+  --query "Stacks[0].Outputs[?OutputKey=='SiteBucket'].OutputValue" --output text)
+TABLE=$(aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-production \
+  --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" --output text)
+aws s3 rm "s3://$SITE_BUCKET" --recursive
+aws cloudformation delete-stack --region eu-central-1 --stack-name attendless-production
+aws cloudformation wait stack-delete-complete --region eu-central-1 --stack-name attendless-production
+aws dynamodb delete-table --region eu-central-1 --table-name "$TABLE"   # retained by the stack
+
+# The certificate (us-east-1).
+aws cloudformation delete-stack --region us-east-1 --stack-name attendless-certificate
+
+# The deploy setup: its artifact bucket is versioned and retained.
+ARTIFACTS=$(aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-bootstrap \
+  --query "Stacks[0].Outputs[?OutputKey=='DeploymentBucket'].OutputValue" --output text)
+aws cloudformation delete-stack --region eu-central-1 --stack-name attendless-bootstrap
+aws s3api delete-objects --bucket "$ARTIFACTS" --delete "$(aws s3api list-object-versions --bucket "$ARTIFACTS" \
+  --query '{Objects: [Versions, DeleteMarkers][][].{Key: Key, VersionId: VersionId}}' --output json)"
+aws s3api delete-bucket --bucket "$ARTIFACTS"
+```
+
+If the bootstrap stack created GitHub's OIDC provider (you left `GitHubOidcProviderArn` empty) and the portfolio's deploys use it too, deleting the stack removes it. Recreate it afterwards with `aws iam create-open-id-connect-provider --url https://token.actions.githubusercontent.com --client-id-list sts.amazonaws.com`. If a command fails because a resource never existed or a bucket is already empty, skip it. Finally, delete the ACM validation CNAMEs (`_…acm-validations.aws`) from Cloudflare DNS.
+
+For the portfolio's old service, follow [MIGRATION.md](MIGRATION.md) §3, steps 5–6.
 
 ## Afterwards
 
 - **Every merge to `main`** tests and deploys. Pull requests only test.
-- **Deploying from your machine** uses the same script, which defaults to eu-central-1. Export the same values first:
-
-  ```sh
-  DEPLOYMENT_BUCKET=… ROLE_BOUNDARY_ARN=… DOMAIN_NAME=attendless.app CERTIFICATE_ARN=… npm run deploy
-  ```
-- **Rollback:** redeploy a known-good commit. Old Lambda packages stay in the artifact bucket.
-- **Retiring the old portfolio service:** follow [MIGRATION.md](MIGRATION.md) §3, steps 5–6, only after step 9 passes. The portfolio's old service stays in its own region; only Attendless moves to Frankfurt.
-- **Costs:** the stacks have no fixed monthly charges, only pay-per-use pricing for requests, DynamoDB and transfer. Frankfurt's rates are somewhat higher than us-east-1's. The certificate is free.
-- **Abuse:** room codes are guessable and the API is public. It does not enforce a spending cap. If abuse becomes a problem, the next step is AWS WAF rate limiting. That needs the API routed through CloudFront, because WAF can't attach to a Lambda Function URL, and costs about $5–10 a month.
+- **Deploying from your machine:** `npx wrangler login`, then `DOMAIN_NAME=attendless.app npm run deploy`. Export `TURN_KEY_ID` and `TURN_KEY_API_TOKEN` to upload them too; otherwise the deployed secrets stay as they are.
+- **Rollback:** `npx wrangler rollback` returns the Worker and its files to the previous version at once, or pick one with `npx wrangler versions list`. Reverting the commit on `main` also redeploys. Rooms live in Durable Objects, which a rollback doesn't touch.
+- **Usage:** **Workers & Pages → attendless → Metrics**, and **Durable Objects** for requests and compute against the free limits. Logs are sampled at 10% (`observability` in `wrangler.jsonc`).
+- **Abuse:** room codes are guessable and the API is public. On the Free plan, abuse can only exhaust the daily limits, not run up a bill. TURN credentials go to anyone in a room, so the TURN relay is the one cost exposed to abuse; Cloudflare's TURN page shows its traffic, and the key can be rotated at any time.

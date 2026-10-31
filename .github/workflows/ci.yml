@@ -12,28 +12,21 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
       - run: npm ci
       - run: npm test
-      - run: go test -race ./...
-        working-directory: backend
-      - run: npm run build:backend
       - run: npx playwright install --with-deps chromium
+      # Mocked UI tests, plus the real Worker and Durable Object in local workerd.
       - run: npm run test:e2e
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install cfn-lint==1.52.0
-      - run: cfn-lint --regions eu-central-1 us-east-1 -- infra/template.yaml infra/bootstrap.yaml infra/certificate.yaml
+      - name: Check that the Worker bundles and its configuration is valid
+        run: ATTENDLESS_API_URL=/api npm run build && npx wrangler deploy --dry-run --outdir .build/worker
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -47,30 +40,19 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      contents: read
-      id-token: write
     env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
-      DEPLOYMENT_BUCKET: ${{ vars.DEPLOYMENT_BUCKET }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
-      CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
-      ROLE_BOUNDARY_ARN: ${{ vars.ROLE_BOUNDARY_ARN }}
+      TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+      TURN_KEY_API_TOKEN: ${{ secrets.TURN_KEY_API_TOKEN }}
       ATTENDLESS_APTABASE_KEY: ${{ vars.APTABASE_APP_KEY }}
-      STACK_NAME: attendless-production
+      WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
       - run: npm ci
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
       - run: npm run deploy

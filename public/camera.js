@@ -16,7 +16,7 @@ export async function openCamera({ demo = false } = {}) {
         facingMode: { ideal: 'environment' },
         width: { ideal: 1280 },
         height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 30 },
+        frameRate: { ideal: 15, max: 30 },
       },
     })
   } catch (e) {
