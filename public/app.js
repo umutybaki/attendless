@@ -3,6 +3,7 @@ import { isSharingPhone, safeQRLink } from './rtc.js'
 import { hostRoom, joinRoom } from './room.js'
 import { openCamera, scan } from './camera.js'
 import { demoRoom, crowd } from './demo.js'
+import { track } from './analytics.js'
 
 const params = new URLSearchParams(location.search)
 const locale = params.get('lang') === 'tr' ? 'tr' : 'en'
@@ -26,6 +27,8 @@ const fresh = () => ({
 const state = fresh()
 let room = null, camera = null, stops = [], wakeLock = null, autoPaused = false
 let armTimer = 0, lostAt = 0, typed = -1
+// The camera's totals for its room, reported once when the room ends.
+let stats = null
 
 // Reloading keeps you in your room; closing the tab forgets it.
 const memory = {
@@ -202,7 +205,7 @@ function press(digit) {
   typed = state.digits.length
   state.digits += digit
   render()
-  if (state.digits.length === 6) void join(state.digits)
+  if (state.digits.length === 6) void join(state.digits, '', 'code')
 }
 
 function erase(all = false) {
@@ -212,7 +215,7 @@ function erase(all = false) {
   render()
 }
 
-async function join(code, token) {
+async function join(code, token, via) {
   Object.assign(state, { entry: 'checking', digits: code, unreachable: false })
   render()
   let next
@@ -228,8 +231,10 @@ async function join(code, token) {
     if (!state.unreachable) memory.set(null)
     render()
     buzz([30, 40, 30])
+    track('join_failed', { via, reason: state.unreachable ? 'unreachable' : 'not_found' })
     return
   }
+  track('room_joined', { via })
   state.entry = 'locked'
   render()
   await wait(360)
@@ -288,7 +293,9 @@ async function enterCamera(saved) {
     return render()
   }
   Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !saved })
-  memory.set({ code: room.code, role: 'camera', token: room.token })
+  stats = { created: saved?.created ?? Date.now(), started: 0, links: 0, peak: 0 }
+  memory.set({ code: room.code, role: 'camera', token: room.token, created: stats.created })
+  if (!saved) track('room_created')
   room.addEventListener('viewers', (event) => setViewers(event.detail, state.extra))
   room.addEventListener('ended', () => {
     exit()
@@ -304,6 +311,7 @@ async function enterCamera(saved) {
 function setViewers(real, extra) {
   const before = state.viewers + state.extra
   Object.assign(state, { viewers: real, extra })
+  if (stats) stats.peak = Math.max(stats.peak, real + extra)
   if (real + extra > before) {
     flash($('presence'), 'bump', 400)
     toast(t.joined)
@@ -319,10 +327,13 @@ async function startCamera() {
     opened = await openCamera({ demo })
   } catch (e) {
     Object.assign(state, { starting: false, cameraError: e.kind ?? 'blocked' })
+    track('camera_failed', { reason: state.cameraError })
     return render()
   }
   if (state.role !== 'camera') return opened.stop()
   camera = opened
+  stats.started ||= Date.now()
+  track('camera_started', { zoom: camera.zooms.length > 0, torch: camera.torch })
   show(camera.stream)
   $('zoom').replaceChildren(...camera.zooms.map((zoom) => {
     const button = Object.assign(document.createElement('button'), { textContent: `${zoom}×` })
@@ -354,6 +365,8 @@ function seen(result) {
   const lock = result.url ? 'link' : 'text'
   const isNew = result.url && result.url !== state.link?.url
   if (isNew) {
+    // Rotating codes produce a link every few seconds, so only the first is an event.
+    if (++stats.links === 1) track('first_link_scanned', { seconds: Math.round((Date.now() - stats.started) / 1000) })
     state.link = { url: result.url, scannedAt: Date.now() }
     room.sendLink(state.link)
     flash($('link'))
@@ -409,7 +422,10 @@ async function keepAwake() {
 }
 
 function arm() {
-  if (state.armed) return exit(true)
+  if (state.armed) {
+    track('room_ended', { minutes: Math.round((Date.now() - stats.created) / 60000), links: stats.links, peak_viewers: stats.peak })
+    return exit(true)
+  }
   state.armed = true
   render()
   clearTimeout(armTimer)
@@ -446,7 +462,7 @@ function exit(ending = false) {
   camera?.stop()
   void wakeLock?.release().catch(() => {})
   video.srcObject = null
-  room = camera = wakeLock = null
+  room = camera = wakeLock = stats = null
   stops = []
   clearTimeout(armTimer)
   memory.set(null)
@@ -486,11 +502,21 @@ $('zoom').addEventListener('click', async (event) => {
   } catch { /* Unsupported step. */ }
   render()
 })
-$('link-copy').addEventListener('click', () => state.link && copyText(state.link.url))
-$('invite-copy').addEventListener('click', () => copyText(inviteUrl()))
+$('link-open').addEventListener('click', () => track('link_opened', { action: 'open', role: state.role }))
+$('link-copy').addEventListener('click', () => {
+  if (!state.link) return
+  track('link_opened', { action: 'copy', role: state.role })
+  copyText(state.link.url)
+})
+$('invite-copy').addEventListener('click', () => {
+  track('invite_shared', { method: 'copy', role: state.role })
+  copyText(inviteUrl())
+})
 $('invite-share').addEventListener('click', async () => {
   const data = { title, text: fill(t.shareText, { code: spaced(state.code) }), url: inviteUrl() }
-  if (navigator.canShare?.(data)) return navigator.share(data).catch(() => {})
+  const share = Boolean(navigator.canShare?.(data))
+  track('invite_shared', { method: share ? 'share' : 'copy', role: state.role })
+  if (share) return navigator.share(data).catch(() => {})
   copyText(data.url)
 })
 for (const element of document.querySelectorAll('[data-close]')) element.addEventListener('click', () => { state.invite = false; render() })
@@ -546,7 +572,9 @@ if (params.has('room')) {
   const query = params.toString().replace(/(^|&)demo=(?=&|$)/, '$1demo')
   history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}`)
 }
-if (saved?.role === 'camera' && /^\d{6}$/.test(saved.code)) void enterCamera(saved)
-else if (saved?.role === 'viewer' && /^\d{6}$/.test(saved.code)) void join(saved.code, saved.token)
-else if (invited.length === 6) void join(invited)
+const restoring = /^\d{6}$/.test(saved?.code ?? '') && ['camera', 'viewer'].includes(saved.role)
+track('app_opened', { lang: locale, via: restoring ? 'reload' : invited.length === 6 ? 'invite' : 'home' })
+if (restoring && saved.role === 'camera') void enterCamera(saved)
+else if (restoring) void join(saved.code, saved.token, 'reload')
+else if (invited.length === 6) void join(invited, '', 'invite')
 else render()

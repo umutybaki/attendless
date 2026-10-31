@@ -56,6 +56,7 @@ jobs:
       DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
       CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
       ROLE_BOUNDARY_ARN: ${{ vars.ROLE_BOUNDARY_ARN }}
+      ATTENDLESS_APTABASE_KEY: ${{ vars.APTABASE_APP_KEY }}
       STACK_NAME: attendless-production
     steps:
       - uses: actions/checkout@v4
