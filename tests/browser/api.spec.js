@@ -2,7 +2,7 @@ import { test, expect, typeCode } from './fixtures.js'
 
 // The same flows against the server protocol. The API and WebRTC are faked:
 // these tests check requests, signaling and UI, not real network traversal.
-const apiUrl = 'https://attendless-test.lambda-url.us-east-1.on.aws/'
+const apiUrl = 'https://attendless-test.lambda-url.eu-central-1.on.aws/'
 
 async function setup(page, reply) {
   const calls = []

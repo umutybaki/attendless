@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: One-time Attendless setup deployed by an administrator - deployment artifact bucket, ACM certificate for the custom domain, and the GitHub Actions OIDC role that deploys infra/template.yaml with least privilege.
+Description: One-time Attendless setup deployed by an administrator in the app's region - deployment artifact bucket, a permissions boundary, and the GitHub Actions OIDC role that deploys infra/template.yaml with least privilege.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -7,8 +7,7 @@ Metadata:
     ref: [DEPLOY.md]
     arch: admin deploys once -> outputs become GitHub variables -> CI assumes DeployRole -> deploys AppStackName
     must:
-      - us-east-1 only (CloudFront reads ACM certs from there; enforced by Rules)
-      - create completes only after the ACM validation CNAME exists in Cloudflare (DNS only)
+      - same region as AppStackName (role ARNs are scoped to this stack's region); the certificate lives in infra/certificate.yaml (us-east-1)
       - one GitHub OIDC provider per account; pass GitHubOidcProviderArn if it exists
 Parameters:
   GitHubRepository:
@@ -25,21 +24,11 @@ Parameters:
     Default: attendless-production
     AllowedPattern: '[a-z][a-z0-9-]*'
     Description: Stack the role may deploy; lowercase so its generated S3 bucket names match
-  DomainName:
-    Type: String
-    Default: attendless.app
-    Description: Apex domain for the certificate (www is included). Leave empty to skip the certificate.
   GitHubOidcProviderArn:
     Type: String
     Default: ''
     Description: ARN of an existing token.actions.githubusercontent.com provider. Leave empty to create one.
-Rules:
-  CertificateRegion:
-    Assertions:
-      - Assert: !Equals [!Ref 'AWS::Region', us-east-1]
-        AssertDescription: Deploy in us-east-1; CloudFront only accepts ACM certificates from there.
 Conditions:
-  HasDomain: !Not [!Equals [!Ref DomainName, '']]
   CreateOidc: !Equals [!Ref GitHubOidcProviderArn, '']
 Resources:
   ArtifactBucket:
@@ -86,17 +75,6 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
-
-  Certificate:
-    Type: AWS::CertificateManager::Certificate
-    Condition: HasDomain
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: DNS is at Cloudflare, not Route 53, so validation records are added by hand; stack events show them
-    Properties:
-      DomainName: !Ref DomainName
-      SubjectAlternativeNames: [!Sub 'www.${DomainName}']
-      ValidationMethod: DNS
 
   GitHubOidc:
     Type: AWS::IAM::OIDCProvider
@@ -221,13 +199,11 @@ Resources:
                 Effect: Allow
                 Action: [cloudfront:ListOriginAccessControls, cloudfront:ListResponseHeadersPolicies, cloudfront:ListCachePolicies, acm:ListCertificates]
                 Resource: '*'
-              - !If
-                - HasDomain
-                - Sid: CdnCertificate
-                  Effect: Allow
-                  Action: acm:DescribeCertificate
-                  Resource: !Ref Certificate
-                - !Ref AWS::NoValue
+              # CloudFront certificates always live in us-east-1, whatever this stack's region.
+              - Sid: CdnCertificate
+                Effect: Allow
+                Action: acm:DescribeCertificate
+                Resource: !Sub 'arn:${AWS::Partition}:acm:us-east-1:${AWS::AccountId}:certificate/*'
               - Sid: Function
                 Effect: Allow
                 Action:
@@ -331,7 +307,3 @@ Outputs:
   RoleBoundaryArn:
     Description: GitHub variable ROLE_BOUNDARY_ARN
     Value: !Ref LambdaBoundary
-  CertificateArn:
-    Condition: HasDomain
-    Description: GitHub variable CERTIFICATE_ARN
-    Value: !Ref Certificate

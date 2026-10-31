@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install cfn-lint==1.52.0
-      - run: cfn-lint infra/template.yaml infra/bootstrap.yaml
+      - run: cfn-lint --regions eu-central-1 us-east-1 -- infra/template.yaml infra/bootstrap.yaml infra/certificate.yaml
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -51,7 +51,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
       DEPLOYMENT_BUCKET: ${{ vars.DEPLOYMENT_BUCKET }}
       DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
       CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}

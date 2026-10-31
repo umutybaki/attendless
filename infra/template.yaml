@@ -6,7 +6,7 @@ Metadata:
   com.aws.cloudformation.Context:
     ref: [DEPLOY.md, DESIGN.md, backend/README.md]
     must:
-      - deploy in us-east-1 when DomainName is set (ACM cert for CloudFront must live there)
+      - CertificateArn must be a us-east-1 certificate (CloudFront rule); the stack itself runs in eu-central-1, near its users in Turkey
       - every site origin (CloudFront host, custom domain, www) must be in BackendUrl CORS
       - BackendRole takes RoleBoundaryArn when deployed by the GitHub role (its CreateRole requires the boundary)
 Parameters:
@@ -23,7 +23,7 @@ Parameters:
   CertificateArn:
     Type: String
     Default: ''
-    Description: Issued us-east-1 ACM certificate covering DomainName and www.DomainName (output of infra/bootstrap.yaml)
+    Description: Issued us-east-1 ACM certificate covering DomainName and www.DomainName (output of infra/certificate.yaml)
   RoleBoundaryArn:
     Type: String
     Default: ''

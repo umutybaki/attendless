@@ -4,6 +4,11 @@ First deployment, start to finish, including `attendless.app` on Cloudflare. Ste
 
 You need: AWS CLI v2, an AWS identity that can create IAM roles (an administrator), access to the Cloudflare dashboard for `attendless.app`, and admin access to the GitHub repository.
 
+**Regions.** Attendless runs in **eu-central-1 (Frankfurt)**, the closest AWS region to its users in Turkey. That covers the API, the room database, the site files and the deploy setup.
+
+- **The certificate is the one exception.** CloudFront only accepts TLS certificates issued in **us-east-1**, so the certificate gets its own small stack there. It holds no data and costs nothing.
+- **CloudFront itself is global.** It serves visitors from edge locations near them. Its `PriceClass_100` includes the "Europe, Israel, and Türkiye" pricing region, and CloudFront has an edge location in Istanbul.
+
 ## 1. Sign in to AWS
 
 ```sh
@@ -11,11 +16,11 @@ aws login
 aws sts get-caller-identity
 ```
 
-Use the account you want Attendless in. Everything below runs in **us-east-1**: CloudFront only accepts certificates issued there.
+Use the account you want Attendless in. Each command below passes `--region` explicitly.
 
 ## 2. Find out whether GitHub's OIDC provider exists (once)
 
-An AWS account can have only one `token.actions.githubusercontent.com` provider. Your portfolio may already use it.
+An AWS account can have only one `token.actions.githubusercontent.com` provider. Your portfolio may already use it. The provider is global, so the region doesn't matter here.
 
 ```sh
 aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text
@@ -23,28 +28,38 @@ aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn'
 
 If an ARN ending in `oidc-provider/token.actions.githubusercontent.com` appears, keep it for the next step. Otherwise, leave the parameter empty and the bootstrap creates it.
 
-## 3. Deploy the bootstrap stack (once)
+## 3. Deploy the bootstrap stack in Frankfurt (once)
 
 [`infra/bootstrap.yaml`](infra/bootstrap.yaml) creates:
 
 - the private bucket for Lambda packages;
-- the certificate for `attendless.app` and `www.attendless.app`;
 - a permissions boundary;
-- the role GitHub Actions assumes to deploy. Its trust is pinned to this repository's `production` environment, and it can only touch resources named `attendless-production-*`.
+- the role GitHub Actions assumes to deploy. Its trust is pinned to this repository's `production` environment, and it can only touch resources named `attendless-production-*` in this region.
 
 ```sh
-aws cloudformation deploy --region us-east-1 \
+aws cloudformation deploy --region eu-central-1 \
   --stack-name attendless-bootstrap \
   --template-file infra/bootstrap.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides GitHubOidcProviderArn=PASTE_ARN_FROM_STEP_2_OR_LEAVE_EMPTY
+
+aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-bootstrap \
+  --query 'Stacks[0].Outputs[].[Description,OutputValue]' --output table
 ```
 
-The command will appear to hang. **This is expected.** The certificate waits for DNS validation, so keep it running and do step 4 in another terminal.
+Keep the outputs: they become GitHub variables in step 5.
 
-## 4. Validate the certificate in Cloudflare (once)
+## 4. Issue the certificate in us-east-1 and validate it in Cloudflare (once)
 
-Print the validation records:
+[`infra/certificate.yaml`](infra/certificate.yaml) requests a certificate for `attendless.app` and `www.attendless.app`:
+
+```sh
+aws cloudformation deploy --region us-east-1 \
+  --stack-name attendless-certificate \
+  --template-file infra/certificate.yaml
+```
+
+The command will appear to hang. **This is expected.** The certificate waits for DNS validation, so keep it running. In another terminal, print the validation records:
 
 ```sh
 aws acm list-certificates --region us-east-1 \
@@ -62,13 +77,13 @@ In Cloudflare, open **attendless.app → DNS → Records** and add each record a
 
 The two names can share a record. If Cloudflare reports a duplicate, one record is enough.
 
-Validation usually takes a few minutes, after which the step 3 command finishes. Leave these records in place: ACM uses them to renew the certificate. If the zone has CAA records, one of them must allow `amazon.com`.
+Validation usually takes a few minutes, after which the deploy command finishes. Leave these records in place: ACM uses them to renew the certificate. If the zone has CAA records, one of them must allow `amazon.com`.
 
-Then print the outputs. You need them in step 5:
+Print the certificate's ARN for step 8:
 
 ```sh
-aws cloudformation describe-stacks --region us-east-1 --stack-name attendless-bootstrap \
-  --query 'Stacks[0].Outputs[].[Description,OutputValue]' --output table
+aws cloudformation describe-stacks --region us-east-1 --stack-name attendless-certificate \
+  --query "Stacks[0].Outputs[?OutputKey=='CertificateArn'].OutputValue" --output text
 ```
 
 ## 5. Configure GitHub (once)
@@ -79,10 +94,10 @@ aws cloudformation describe-stacks --region us-east-1 --stack-name attendless-bo
 
    | Variable | Value |
    |---|---|
-   | `AWS_DEPLOY_ROLE_ARN` | `DeployRoleArn` output |
-   | `DEPLOYMENT_BUCKET` | `DeploymentBucket` output |
-   | `ROLE_BOUNDARY_ARN` | `RoleBoundaryArn` output |
-   | `AWS_REGION` | `us-east-1` |
+   | `AWS_DEPLOY_ROLE_ARN` | `DeployRoleArn` output (step 3) |
+   | `DEPLOYMENT_BUCKET` | `DeploymentBucket` output (step 3) |
+   | `ROLE_BOUNDARY_ARN` | `RoleBoundaryArn` output (step 3) |
+   | `AWS_REGION` | `eu-central-1` |
 
    Leave `DOMAIN_NAME` and `CERTIFICATE_ARN` unset for now. The first deploy uses the CloudFront hostname, because the domain can't point anywhere until the distribution exists.
 
@@ -95,7 +110,7 @@ gh api -X POST repos/umutybaki/attendless/environments/production/deployment-bra
 gh variable set AWS_DEPLOY_ROLE_ARN --env production --body 'arn:aws:iam::…'
 gh variable set DEPLOYMENT_BUCKET   --env production --body 'attendless-bootstrap-artifactbucket-…'
 gh variable set ROLE_BOUNDARY_ARN   --env production --body 'arn:aws:iam::…:policy/…'
-gh variable set AWS_REGION          --env production --body us-east-1
+gh variable set AWS_REGION          --env production --body eu-central-1
 ```
 
 ## 6. First deploy
@@ -105,7 +120,7 @@ Open a pull request from `codex/extract-attendless` to `main`. CI runs the Node,
 The deploy job:
 
 1. builds and uploads the Lambda;
-2. deploys the `attendless-production` stack (the first run takes 10–20 minutes, mostly CloudFront);
+2. deploys the `attendless-production` stack in eu-central-1 (the first run takes 10–20 minutes, mostly CloudFront);
 3. uploads the site and invalidates the CloudFront cache;
 4. runs [`scripts/smoke.mjs`](scripts/smoke.mjs) against the live site. It creates, joins and ends one real room.
 
@@ -116,7 +131,7 @@ The log ends with `Attendless deployed: https://dxxxxxxxx.cloudfront.net`.
 Get the distribution hostname:
 
 ```sh
-aws cloudformation describe-stacks --region us-east-1 --stack-name attendless-production \
+aws cloudformation describe-stacks --region eu-central-1 --stack-name attendless-production \
   --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" --output text
 ```
 
@@ -136,7 +151,7 @@ Add two more `production` variables:
 | Variable | Value |
 |---|---|
 | `DOMAIN_NAME` | `attendless.app` |
-| `CERTIFICATE_ARN` | `CertificateArn` output from step 4 |
+| `CERTIFICATE_ARN` | the us-east-1 certificate ARN from step 4 |
 
 Then rerun the deploy: **Actions → Test and deploy Attendless → Run workflow → main**. This run:
 
@@ -152,17 +167,17 @@ Mocked tests don't prove camera permissions or real network traversal, so do thi
 2. Join from a second phone and from a laptop, using the code and the invite link.
 3. Show a QR code on another screen. Both viewers should get the link within about a second, with a ticking age. Show a second QR code and check that the link updates.
 4. Try **Pause**, a reload on each device, and **End** (two taps). Viewers should see each state.
-5. Repeat on mobile data. There is no TURN relay, so some restrictive networks (strict corporate or campus Wi-Fi) can't connect directly.
+5. Repeat on mobile data from Turkish carriers. There is no TURN relay, so some restrictive networks (strict corporate or campus Wi-Fi) can't connect directly.
 
 ## Afterwards
 
 - **Every merge to `main`** tests and deploys. Pull requests only test.
-- **Deploying from your machine** uses the same script. Export the same values first:
+- **Deploying from your machine** uses the same script, which defaults to eu-central-1. Export the same values first:
 
   ```sh
   DEPLOYMENT_BUCKET=… ROLE_BOUNDARY_ARN=… DOMAIN_NAME=attendless.app CERTIFICATE_ARN=… npm run deploy
   ```
 - **Rollback:** redeploy a known-good commit. Old Lambda packages stay in the artifact bucket.
-- **Retiring the old portfolio service:** follow [MIGRATION.md](MIGRATION.md) §3, steps 5–6, only after step 9 passes.
-- **Costs:** the stack has no fixed monthly charges, only pay-per-use pricing for requests, DynamoDB and transfer. The certificate is free.
+- **Retiring the old portfolio service:** follow [MIGRATION.md](MIGRATION.md) §3, steps 5–6, only after step 9 passes. The portfolio's old service stays in its own region; only Attendless moves to Frankfurt.
+- **Costs:** the stacks have no fixed monthly charges, only pay-per-use pricing for requests, DynamoDB and transfer. Frankfurt's rates are somewhat higher than us-east-1's. The certificate is free.
 - **Abuse:** room codes are guessable and the API is public. It does not enforce a spending cap. If abuse becomes a problem, the next step is AWS WAF rate limiting. That needs the API routed through CloudFront, because WAF can't attach to a Lambda Function URL, and costs about $5–10 a month.

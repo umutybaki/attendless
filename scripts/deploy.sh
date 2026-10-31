@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${DEPLOYMENT_BUCKET:?Set DEPLOYMENT_BUCKET to a private deployment-artifact bucket in AWS_REGION}"
-export AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION="${AWS_REGION:-eu-central-1}"
 STACK_NAME="${STACK_NAME:-attendless-production}"
 npm run build:backend
 ARTIFACT_HASH="$(sha256sum .build/backend.zip | cut -d ' ' -f 1)"

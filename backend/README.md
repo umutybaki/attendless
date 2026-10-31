@@ -24,11 +24,11 @@ From the repository root, `npm run build:backend` creates an ARM64 `bootstrap` e
 
 The Lambda requires `TABLE_NAME`; AWS supplies its region and execution-role credentials. The frontend requires the public `ATTENDLESS_API_URL` at static build time. No Next.js environment variables or SST links remain. CORS permits the stack's CloudFront HTTPS origin, the custom domain and its `www` when `DomainName` is set, and localhost/127.0.0.1 port 3000. HTTPS is required for camera access outside localhost.
 
-See [DEPLOY.md](../DEPLOY.md) for the one-time AWS, Cloudflare and GitHub setup and the deployment order.
+The stack runs in eu-central-1. See [DEPLOY.md](../DEPLOY.md) for the one-time AWS, Cloudflare and GitHub setup and the deployment order.
 
 ## Cost estimate
 
-Working estimate: five 10-minute sessions/day, 30 days/month, five viewers in each. Each browser polls every two seconds only while in a room. This is approximately 360,000 Lambda calls/month, plus consistent DynamoDB reads for sessions, room state and signaling, and roughly 300,000 small writes (viewer presence on each poll, camera heartbeats) plus connection setup. At typical us-east-1 on-demand rates, the incremental backend should stay below $1/month at this usage, excluding free-tier allowances. Actual duration, signaling size, latency, traffic and AWS pricing determine the bill. This estimate excludes the portfolio site's existing hosting, DNS/domain costs and taxes. There is no API Gateway, media relay, or AWS video egress bill.
+Working estimate: five 10-minute sessions/day, 30 days/month, five viewers in each. Each browser polls every two seconds only while in a room. This is approximately 360,000 Lambda calls/month, plus consistent DynamoDB reads for sessions, room state and signaling, and roughly 300,000 small writes (viewer presence on each poll, camera heartbeats) plus connection setup. At eu-central-1 on-demand rates (somewhat above us-east-1's), the incremental backend should stay around $1/month at this usage, excluding free-tier allowances; check current AWS pricing before relying on it. Actual duration, signaling size, latency, traffic and AWS pricing determine the bill. This estimate excludes the portfolio site's existing hosting, DNS/domain costs and taxes. There is no API Gateway, media relay, or AWS video egress bill.
 
 ## Manual acceptance check
 

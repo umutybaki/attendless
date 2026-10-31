@@ -15,7 +15,7 @@ npm ci
 npm test
 (cd backend && go test -race ./...)
 # Optional for UI work: use the ApiUrl output of your deployed stack.
-ATTENDLESS_API_URL=https://YOUR_FUNCTION.lambda-url.us-east-1.on.aws/ npm run dev
+ATTENDLESS_API_URL=https://YOUR_FUNCTION.lambda-url.eu-central-1.on.aws/ npm run dev
 ```
 
 Without `ATTENDLESS_API_URL`, rooms run between tabs of the same browser (put two windows side by side; background tabs are throttled). With it, rooms live on that API and video travels over WebRTC. The variable is a public endpoint, not a secret. The development server binds to loopback on port 3000. Local camera access works on localhost; a phone accessing a computer's LAN IP needs HTTPS. Production uses CloudFront HTTPS. Do not use a production room for isolated test sessions.
@@ -31,20 +31,20 @@ Browser tests start their own server; leave port 3000 free. `room.spec.js` runs 
 ## Static deployment
 
 ```sh
-ATTENDLESS_API_URL=https://YOUR_FUNCTION.lambda-url.us-east-1.on.aws/ npm run build
+ATTENDLESS_API_URL=https://YOUR_FUNCTION.lambda-url.eu-central-1.on.aws/ npm run build
 ```
 
 Upload **the contents of `dist/`** to any HTTPS static host. There is no frontend compilation: the build copies files, the QR libraries, and writes the endpoint into `config.js`. All scripts and styles are local. A different origin requires adding its exact origin to the Lambda Function URL CORS configuration in `infra/template.yaml`.
 
 The included AWS deployment uses CloudFormation (no SST state), a private S3 bucket behind CloudFront, a Go ARM64 Lambda Function URL, and an on-demand DynamoDB table. The Lambda is packaged as a custom `provided.al2023` runtime. Only session hashes, leases and WebRTC signaling go through AWS; video and QR links stay peer to peer.
 
-See [DEPLOY.md](DEPLOY.md) for the one-time AWS, Cloudflare and GitHub setup (`infra/bootstrap.yaml`), the first deployment and rollback, and [MIGRATION.md](MIGRATION.md) for retiring the portfolio's old service. The workflow deploys only after frontend, backend and infrastructure checks pass.
+Everything runs in eu-central-1 (Frankfurt), close to users in Turkey, except the domain's certificate, which CloudFront requires in us-east-1. See [DEPLOY.md](DEPLOY.md) for the one-time AWS, Cloudflare and GitHub setup, the first deployment and rollback, and [MIGRATION.md](MIGRATION.md) for retiring the portfolio's old service. The workflow deploys only after frontend, backend and infrastructure checks pass.
 
 ## Layout
 
 - `public/`: static frontend: UI (`app.js`, `styles.css`), translations, room transport (`room.js`), camera and scanner (`camera.js`), demo mode (`demo.js`).
 - `backend/`: Go Lambda, protocol tests and architecture notes.
-- `infra/template.yaml`: the app stack. `infra/bootstrap.yaml`: one-time artifact bucket, certificate and GitHub deploy role.
+- `infra/template.yaml`: the app stack (eu-central-1). `infra/bootstrap.yaml`: one-time artifact bucket and GitHub deploy role (eu-central-1). `infra/certificate.yaml`: the domain's certificate (us-east-1, as CloudFront requires).
 - `scripts/`: static build, local server, Lambda packaging, deployment and deployed smoke check.
 - `tests/`: Node unit tests and Playwright browser tests.
 
