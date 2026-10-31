@@ -10,11 +10,11 @@ Metadata:
       - same region as AppStackName (role ARNs are scoped to this stack's region); the certificate lives in infra/certificate.yaml (us-east-1)
       - one GitHub OIDC provider per account; pass GitHubOidcProviderArn if it exists
 Parameters:
-  GitHubRepository:
+  GitHubSubjectPrefix:
     Type: String
-    Default: umutybaki/attendless
-    AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
-    Description: owner/name of the repository whose workflow deploys
+    Default: repo:umutybaki@56262778/attendless@1439523130
+    AllowedPattern: 'repo:[^:]+'
+    Description: Subject prefix in this repository's GitHub OIDC tokens. This repo uses immutable subjects (owner and repo IDs); print it with `gh api repos/OWNER/REPO/actions/oidc/customization/sub`.
   GitHubEnvironment:
     Type: String
     Default: production
@@ -107,7 +107,7 @@ Resources:
       com.aws.cloudformation.Context:
         why: CloudFormation runs with the caller's credentials, so this role holds what the app stack needs; resource ARNs follow CFN generated names (<stack>-<LogicalId>-<suffix>)
         must:
-          - trust stays pinned to repo + environment subject
+          - trust stays pinned to repo + environment subject; the prefix must match what GitHub sends (immutable form here)
           - CreateRole requires LambdaBoundary; DeleteRolePermissionsBoundary stays denied
           - PassRole only to lambda.amazonaws.com and only the stack's roles
     Properties:
@@ -123,7 +123,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:environment:${GitHubEnvironment}'
+                token.actions.githubusercontent.com:sub: !Sub '${GitHubSubjectPrefix}:environment:${GitHubEnvironment}'
       Policies:
         - PolicyName: DeployAttendless
           PolicyDocument:
