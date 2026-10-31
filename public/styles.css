@@ -1,12 +1,3 @@
-/* Attendless UI system
-   Layout: one locked screen per view, never scrolled or zoomed. Home is a code
-   readout over a keypad. Room is a stage (the camera feed) with a bar above and
-   a link dock below; the camera's stage runs full bleed under both.
-   Motif: viewfinder corner brackets frame whatever the app is locking onto:
-   the code being typed, the QR the camera sees, the newest link, the room code
-   being shared.
-   Accent: focus-lock yellow, only for "locked on" moments and the one primary
-   action on each screen. Live red is semantic, not accent. */
 :root {
   --bg: #eeefea;
   --surface: #ffffff;

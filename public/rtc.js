@@ -18,9 +18,7 @@ export function isSharingPhone(
     /Android.*Mobile|iPhone|iPod/i.test(nav.userAgent) && nav.maxTouchPoints > 0
   )
 }
-// Waits for ICE gathering so one message carries every candidate. Some networks
-// never finish gathering (a TURN or STUN server that doesn't answer), so after
-// `ms` it goes ahead with the candidates found so far, and fails only if none.
+
 export async function gatherICE(pc, ms = 5000) {
   if (pc.iceGatheringState === 'complete') return
   await new Promise((resolve, reject) => {

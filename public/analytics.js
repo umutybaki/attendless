@@ -1,15 +1,3 @@
-// Product analytics through Aptabase, EU region. Nothing is stored in the
-// browser: the session id lives in memory and resets after an hour idle, as in
-// Aptabase's own SDK. Events load nothing when config.js carries no key, so
-// development and tests send nothing. Demo mode and localhost report as debug
-// data, kept apart from real use in the Aptabase dashboard.
-//
-// Events carry names and coarse properties only: never room codes, tokens,
-// scanned links or their domains. DESIGN.md lists every event and why there
-// are so few: Aptabase's free plan counts events.
-//
-// This is Aptabase's documented event API sent directly, so the summary sent
-// while the page closes can use `keepalive`, which the SDK can't do.
 const key = window.ATTENDLESS_CONFIG?.aptabaseKey || ''
 const debug = new URLSearchParams(location.search).has('demo') || ['localhost', '127.0.0.1'].includes(location.hostname)
 const endpoint = 'https://eu.aptabase.com/api/v0/event'

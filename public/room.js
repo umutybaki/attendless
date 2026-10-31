@@ -1,17 +1,6 @@
 import { gatherICE, safeQRLink } from './rtc.js'
 import { relay, framePlayer } from './camera.js'
 
-// Two transports behind one interface. With an API configured (config.js),
-// rooms live in a Cloudflare Durable Object reached over one WebSocket per
-// page, and video and links travel peer to peer over WebRTC. Without one,
-// rooms travel over a BroadcastChannel between tabs of this browser, which is
-// enough to develop and test the UI.
-//
-//   await hostRoom(saved?)       -> { code, token, publish(stream, video), setState({ paused }),
-//                                     sendLink(link), end(), leave() }; events: 'viewers', 'ended'
-//   await joinRoom(code, token?) -> null for an unknown code, or { code, token, welcomed: { state, link },
-//                                     stream, start(), leave() }; events: 'state', 'link', 'stream', 'ended'
-//                                   Throws when the API cannot be reached.
 const api = window.ATTENDLESS_CONFIG?.apiUrl || ''
 const pollEvery = 2000
 
@@ -26,10 +15,6 @@ class Room extends EventTarget {
 
 // ---------- API transport ----------
 
-// The camera's stream to each viewer. Viewers only need to see the scene: the
-// link arrives separately and the camera reads codes from its full-resolution
-// capture, so the stream stays small. Bandwidth adaptation lowers the frame
-// rate before the resolution.
 const VIDEO = { maxBitrate: 400_000, maxFramerate: 15 }
 const STUN = [{ urls: 'stun:stun.cloudflare.com:3478' }]
 const epochId = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -49,9 +34,6 @@ async function post(path) {
   return response.json()
 }
 
-// One WebSocket to the room that says hello with the token, reconnects with
-// backoff, and pings so a dead connection is noticed. The server answers
-// pings without waking the room, so they cost nothing.
 class Line {
   constructor(code, token, handlers) {
     Object.assign(this, { code, token, handlers, ws: null, ready: false, closed: false, attempt: 0 })
