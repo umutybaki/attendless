@@ -15,7 +15,8 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev',
     url: 'http://127.0.0.1:3000',
-    env: { ATTENDLESS_API_URL: 'https://api.example.test/' },
+    // No API: room.spec.js uses the same-browser transport; api.spec.js injects one.
+    env: { ATTENDLESS_API_URL: '' },
     reuseExistingServer: false,
   },
 })

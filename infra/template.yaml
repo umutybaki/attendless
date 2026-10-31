@@ -1,5 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Attendless static frontend, Go signaling Lambda, and ephemeral DynamoDB room state
+Description: Attendless static frontend on CloudFront (optionally under a custom domain), Go room and signaling Lambda, and ephemeral DynamoDB room state; video and links stay peer to peer.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref: [DEPLOY.md, DESIGN.md, backend/README.md]
+    must:
+      - deploy in us-east-1 when DomainName is set (ACM cert for CloudFront must live there)
+      - every site origin (CloudFront host, custom domain, www) must be in BackendUrl CORS
+      - BackendRole takes RoleBoundaryArn when deployed by the GitHub role (its CreateRole requires the boundary)
 Parameters:
   CodeBucket:
     Type: String
@@ -7,6 +16,23 @@ Parameters:
   CodeKey:
     Type: String
     Description: Key of the packaged Go Lambda ZIP
+  DomainName:
+    Type: String
+    Default: ''
+    Description: Apex domain served by CloudFront (www is added too). Leave empty to use the CloudFront hostname.
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: Issued us-east-1 ACM certificate covering DomainName and www.DomainName (output of infra/bootstrap.yaml)
+  RoleBoundaryArn:
+    Type: String
+    Default: ''
+    Description: Permissions boundary for the Lambda role (output of infra/bootstrap.yaml). Required when the GitHub deploy role deploys.
+Conditions:
+  HasDomain: !And
+    - !Not [!Equals [!Ref DomainName, '']]
+    - !Not [!Equals [!Ref CertificateArn, '']]
+  HasBoundary: !Not [!Equals [!Ref RoleBoundaryArn, '']]
 Resources:
   AttendanceTable:
     Type: AWS::DynamoDB::Table
@@ -29,7 +55,14 @@ Resources:
         Enabled: true
   SiteBucket:
     Type: AWS::S3::Bucket
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: rebuilt from git on every deploy, so no versioning; only CloudFront reads it (OAC)
     Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -46,8 +79,42 @@ Resources:
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: CSP lives in index.html (meta) so dev and tests enforce the same policy; these are header-only protections
+        must:
+          - Permissions-Policy keeps camera=(self); the camera role needs it
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub '${AWS::StackName}-security'
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: no-referrer
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: camera=(self), microphone=(), geolocation=(), payment=(), usb=()
+              Override: true
   Site:
     Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: custom domain is optional so a first deploy works before the certificate exists
+        must:
+          - Aliases need DNS (Cloudflare, DNS only) pointing at DistributionDomainName, or the domain serves nothing
     Properties:
       DistributionConfig:
         Enabled: true
@@ -55,6 +122,10 @@ Resources:
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
+        Aliases: !If
+          - HasDomain
+          - [!Ref DomainName, !Sub 'www.${DomainName}']
+          - !Ref AWS::NoValue
         Origins:
           - Id: static-site
             DomainName: !GetAtt SiteBucket.RegionalDomainName
@@ -68,8 +139,13 @@ Resources:
           CachedMethods: [GET, HEAD]
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
   SiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -85,9 +161,17 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Site}'
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt SiteBucket.Arn, !Sub '${SiteBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
   BackendRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref RoleBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -133,6 +217,8 @@ Resources:
       Cors:
         AllowOrigins:
           - !Sub 'https://${Site.DomainName}'
+          - !If [HasDomain, !Sub 'https://${DomainName}', !Ref AWS::NoValue]
+          - !If [HasDomain, !Sub 'https://www.${DomainName}', !Ref AWS::NoValue]
           - http://localhost:3000
           - http://127.0.0.1:3000
         AllowMethods: [POST]
@@ -154,7 +240,10 @@ Resources:
       InvokedViaFunctionUrl: true
 Outputs:
   SiteUrl:
-    Value: !Sub 'https://${Site.DomainName}'
+    Value: !If [HasDomain, !Sub 'https://${DomainName}', !Sub 'https://${Site.DomainName}']
+  DistributionDomainName:
+    Description: Target of the Cloudflare CNAME records for DomainName and www
+    Value: !GetAtt Site.DomainName
   ApiUrl:
     Value: !GetAtt BackendUrl.FunctionUrl
   SiteBucket:

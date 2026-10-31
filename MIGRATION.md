@@ -2,6 +2,8 @@
 
 The code has been extracted into this repository. AWS resources have **not** been deployed or transferred, and GitHub settings have **not** been changed. Commit and push the two repositories separately, deploying Attendless first.
 
+> **Sections 1, 2 and 4 are superseded by [DEPLOY.md](DEPLOY.md)**, which creates the artifact bucket, deploy role and certificate with `infra/bootstrap.yaml` and sets up `attendless.app`. Rooms are no longer the fixed `313131`: test with **New room** on one device and its code on another. Section 3's cutover order (Attendless first, then the portfolio removal) still applies.
+
 ## 1. Prepare AWS access
 
 Use the same AWS account and `us-east-1` initially. The new stack is named `attendless-production`; the portfolio keeps its existing SST app/state. Do not rename or reuse the portfolio SST app to deploy Attendless.

@@ -200,8 +200,8 @@ a { text-decoration: none; }
   background: var(--fg); animation: caret 1s steps(1) infinite;
 }
 .slot.pop { animation: pop .18s var(--ease); }
-.code[data-state="checking"] { --b-color: var(--fg); --b-inset: -3px; }
-.code[data-state="checking"]::before { animation: hunt .7s var(--ease) infinite alternate; }
+.code[data-state="checking"], .code[data-state="creating"] { --b-color: var(--fg); --b-inset: -3px; }
+.code[data-state="checking"]::before, .code[data-state="creating"]::before { animation: hunt .7s var(--ease) infinite alternate; }
 .code[data-state="locked"] { --b-color: var(--lock-line); --b-inset: -3px; }
 .code[data-state="locked"] .slot { border-color: var(--lock-line); }
 .code[data-state="error"] { --b-color: var(--alert); animation: shake .38s; }

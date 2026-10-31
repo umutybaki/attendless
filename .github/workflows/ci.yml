@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install cfn-lint==1.52.0
-      - run: cfn-lint infra/template.yaml
+      - run: cfn-lint infra/template.yaml infra/bootstrap.yaml
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -53,6 +53,9 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOYMENT_BUCKET: ${{ vars.DEPLOYMENT_BUCKET }}
+      DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+      CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+      ROLE_BOUNDARY_ARN: ${{ vars.ROLE_BOUNDARY_ARN }}
       STACK_NAME: attendless-production
     steps:
       - uses: actions/checkout@v4

@@ -10,7 +10,8 @@ ARTIFACT_KEY="$STACK_NAME/backend/$ARTIFACT_HASH.zip"
 aws s3 cp .build/backend.zip "s3://$DEPLOYMENT_BUCKET/$ARTIFACT_KEY" --only-show-errors
 aws cloudformation deploy --template-file infra/template.yaml \
   --stack-name "$STACK_NAME" --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
-  --parameter-overrides "CodeBucket=$DEPLOYMENT_BUCKET" "CodeKey=$ARTIFACT_KEY"
+  --parameter-overrides "CodeBucket=$DEPLOYMENT_BUCKET" "CodeKey=$ARTIFACT_KEY" \
+  "DomainName=${DOMAIN_NAME:-}" "CertificateArn=${CERTIFICATE_ARN:-}" "RoleBoundaryArn=${ROLE_BOUNDARY_ARN:-}"
 aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
   --query 'Stacks[0].Outputs' --output json > .build/outputs.json
 output() {

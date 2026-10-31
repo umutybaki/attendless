@@ -1,12 +1,9 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, typeCode } from './fixtures.js'
 
-// Rooms run between tabs of one browser until the backend exists, so every
+// Without an API configured, rooms run between tabs of one browser, so every
 // test opens its pages in one context. ?demo films a projected slide with a
 // real, rotating QR code, which the camera page scans like a real frame.
-
-async function typeCode(page, code) {
-  for (const digit of code) await page.locator(`[data-digit="${digit}"]`).click()
-}
+// api.spec.js covers the same flows against the server protocol.
 async function createRoom(page) {
   await page.goto('/?demo')
   await page.getByRole('button', { name: 'New room' }).click()

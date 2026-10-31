@@ -2,7 +2,7 @@
 
 One phone points at a QR code. Everyone else in the room gets its link the moment the camera sees it. There are no accounts. A room is a six-digit code.
 
-Try every screen on one machine with `npm run dev`, then open `http://localhost:3000/?demo`. Demo mode films a projected slide whose QR link changes every 12 seconds. The real scanner reads it, and any code you type joins a simulated room. Without `?demo`, rooms are real but only reach other tabs of the same browser (see [Backend contract](#backend-contract)). To try it, put two windows side by side: background tabs are throttled.
+Try every screen on one machine with `npm run dev`, then open `http://localhost:3000/?demo`. Demo mode films a projected slide whose QR link changes every 12 seconds. The real scanner reads it, and any code you type joins a simulated room. Without `?demo` and without an API configured, rooms are real but only reach other tabs of the same browser (see [Rooms and the backend](#rooms-and-the-backend)). To try that, put two windows side by side: background tabs are throttled.
 
 ## Roles
 
@@ -54,20 +54,21 @@ Tokens live at the top of `public/styles.css`. Both themes are defined; the feed
 - **Surfaces.** Opaque keys and cards on the app background. Frosted glass (`.glass`) only over the camera feed.
 - **Layout.** `#app` is `position: fixed; inset: 0`, and every view is a grid that fits the screen. Nothing scrolls. Pinch and double-tap zoom are blocked. Sizes use `clamp()` with `dvh`, so a 320×568 phone fits as well as a desktop. Safe-area insets are respected.
 
-## Backend contract
+## Rooms and the backend
 
-`public/room.js` currently runs rooms over a `BroadcastChannel`. The backend replaces that module behind the same interface, so no UI code changes:
+The UI talks to rooms only through `public/room.js`:
 
-- `hostRoom(code?)` → `{ code, setState({ live, paused }), sendLink({ url, scannedAt }), sendFrame(frame), end() }`, emitting `viewers` (a count).
-- `joinRoom(code)` → `null` for an unknown code, otherwise `{ code, welcomed: { state, link }, start(), leave() }`, emitting `state` (`{ live, paused, offline, viewers }`), `link`, `frame` and `ended`.
+- `hostRoom(saved?)` returns `{ code, token, publish(stream, video), setState({ paused }), sendLink(link), end(), leave() }` and emits `viewers` and `ended`.
+- `joinRoom(code, token?)` returns `null` for an unknown code, otherwise `{ code, token, welcomed, stream, start(), leave() }`, and emits `state`, `link`, `stream` and `ended`. It throws when the server can't be reached.
 
-What the backend has to add, compared with today's Lambda:
+There are two transports behind that interface:
 
-1. **Create room**: generate an unused 6-digit code. Return a host token that only the creator holds; keep it in `sessionStorage` so a reload keeps the camera role.
-2. **Join**: validate the code, returning 404 for unknown codes. Replaces the fixed `313131`.
-3. **Presence**: a viewer count for the camera. Viewers already poll, so this can ride on the existing heartbeat.
-4. **End room**: host token only. Viewers receive `ended`.
-5. **Media and links** stay peer to peer as today. WebRTC video replaces `sendFrame`/`frame`, and the data channel carries links. The earlier WebRTC client is in commit `123093d` (`public/app.js`). The camera lease becomes simpler: only the host can share.
+- **API** (used when `config.js` has an API URL). The Go Lambda in `backend/` creates rooms under a random unused 6-digit code. It issues a host token or a viewer token, and only SHA-256 hashes of tokens are stored.
+  - Polling the API every 2 seconds counts viewers, carries pause, and renews the camera's 12-second lease.
+  - Only the host can claim the camera or end the room. An ended room returns 410 to every session.
+  - Video and links go peer to peer over WebRTC, with links on an unordered data channel that repeats the latest one.
+  - Tokens live in `sessionStorage`, so a reload keeps your role.
+- **Same browser** (no API configured). The room runs over a `BroadcastChannel`, with JPEG frames standing in for video. It's for development and the browser tests.
 
 ## Research
 

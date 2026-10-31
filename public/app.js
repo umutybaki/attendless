@@ -1,7 +1,7 @@
 import { copy } from './copy.js'
 import { isSharingPhone, safeQRLink } from './rtc.js'
 import { hostRoom, joinRoom } from './room.js'
-import { openCamera, scan, relay, framePlayer } from './camera.js'
+import { openCamera, scan } from './camera.js'
 import { demoRoom, crowd } from './demo.js'
 
 const params = new URLSearchParams(location.search)
@@ -24,7 +24,7 @@ const fresh = () => ({
   armed: false, invite: false, lock: '',
 })
 const state = fresh()
-let room = null, camera = null, player = null, stops = [], wakeLock = null, autoPaused = false
+let room = null, camera = null, stops = [], wakeLock = null, autoPaused = false
 let armTimer = 0, lostAt = 0, typed = -1
 
 // Reloading keeps you in your room; closing the tab forgets it.
@@ -74,10 +74,10 @@ function renderHome() {
   $('code').dataset.state = state.entry
   $('home-status').textContent =
     state.entry === 'checking' || state.entry === 'locked' ? fill(t.checking, { code: spaced(state.digits) })
-    : state.entry === 'error' ? fill(t.notFound, { code: spaced(state.digits) })
+    : state.entry === 'creating' ? t.creating
+    : state.entry === 'error' ? (state.unreachable ? t.unreachable : fill(t.notFound, { code: spaced(state.digits) }))
     : t.idle
-  const busy = state.entry === 'checking' || state.entry === 'locked'
-  for (const key of document.querySelectorAll('.key')) key.disabled = busy
+  for (const key of document.querySelectorAll('.key')) key.disabled = busy()
 }
 
 function renderRoom() {
@@ -193,8 +193,10 @@ async function copyText(text) {
 
 // ---------- Home: typing a code ----------
 
+const busy = () => ['checking', 'locked', 'creating'].includes(state.entry)
+
 function press(digit) {
-  if (state.view !== 'home' || state.entry === 'checking' || state.entry === 'locked') return
+  if (state.view !== 'home' || busy()) return
   if (state.entry === 'error') Object.assign(state, { entry: 'idle', digits: '' })
   if (state.digits.length >= 6) return
   typed = state.digits.length
@@ -210,14 +212,20 @@ function erase(all = false) {
   render()
 }
 
-async function join(code) {
-  Object.assign(state, { entry: 'checking', digits: code })
+async function join(code, token) {
+  Object.assign(state, { entry: 'checking', digits: code, unreachable: false })
   render()
-  const next = (await joinRoom(code)) ?? (demo ? await demoRoom(code) : null)
+  let next
+  try {
+    next = (await joinRoom(code, token)) ?? (demo ? await demoRoom(code) : null)
+  } catch {
+    next = demo ? await demoRoom(code) : null
+    state.unreachable = !demo
+  }
   if (state.view !== 'home' || state.digits !== code) return next?.leave()
   if (!next) {
     state.entry = 'error'
-    memory.set(null)
+    if (!state.unreachable) memory.set(null)
     render()
     buzz([30, 40, 30])
     return
@@ -236,10 +244,7 @@ function enterViewer(next) {
   Object.assign(state, fresh(), { view: 'room', role: 'viewer', code: next.code }, pick(initial))
   if (link) receive(link, false)
   if (next.stream) show(next.stream)
-  else {
-    player = framePlayer()
-    show(player.stream)
-  }
+  room.addEventListener('stream', (event) => show(event.detail))
   room.addEventListener('state', (event) => {
     const before = state.viewers
     Object.assign(state, pick(event.detail))
@@ -247,14 +252,13 @@ function enterViewer(next) {
     render()
   })
   room.addEventListener('link', (event) => receive(event.detail, true))
-  room.addEventListener('frame', (event) => void player?.draw(event.detail).catch(() => {}))
   room.addEventListener('ended', () => {
     state.ended = true
     memory.set(null)
     render()
   })
   room.start()
-  memory.set({ code: next.code, role: 'viewer' })
+  memory.set({ code: next.code, role: 'viewer', token: next.token })
   render()
 }
 
@@ -273,11 +277,23 @@ function receive(link, announce) {
 
 // ---------- Camera ----------
 
-function enterCamera(code) {
-  room = hostRoom(code)
-  Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !code })
-  memory.set({ code: room.code, role: 'camera' })
+async function enterCamera(saved) {
+  if (busy()) return
+  Object.assign(state, { entry: 'creating', digits: '', unreachable: false })
+  render()
+  try {
+    room = await hostRoom(saved)
+  } catch {
+    Object.assign(state, { entry: 'error', unreachable: true })
+    return render()
+  }
+  Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !saved })
+  memory.set({ code: room.code, role: 'camera', token: room.token })
   room.addEventListener('viewers', (event) => setViewers(event.detail, state.extra))
+  room.addEventListener('ended', () => {
+    exit()
+    toast(t.ended)
+  })
   if (demo) stops.push(crowd((n) => setViewers(state.viewers, n)))
   $('invite-code').textContent = spaced(room.code)
   render()
@@ -314,11 +330,8 @@ async function startCamera() {
     return button
   }))
   Object.assign(state, { starting: false, live: true, paused: false, zoom: 1, torch: false })
-  room.setState({ live: true, paused: false })
-  stops.push(
-    scan(video, seen),
-    relay(video, (frame) => { if (!state.paused) room.sendFrame(frame) }),
-  )
+  room.publish(camera.stream, video)
+  stops.push(scan(video, seen))
   void keepAwake()
   render()
   requestAnimationFrame(rest)
@@ -433,7 +446,7 @@ function exit(ending = false) {
   camera?.stop()
   void wakeLock?.release().catch(() => {})
   video.srcObject = null
-  room = camera = player = wakeLock = null
+  room = camera = wakeLock = null
   stops = []
   clearTimeout(armTimer)
   memory.set(null)
@@ -446,7 +459,7 @@ function exit(ending = false) {
 
 for (const key of document.querySelectorAll('[data-digit]')) key.addEventListener('click', () => press(key.dataset.digit))
 $('erase').addEventListener('click', () => erase())
-$('new-room').addEventListener('click', () => enterCamera())
+$('new-room').addEventListener('click', () => void enterCamera())
 $('leave').addEventListener('click', () => exit())
 $('end').addEventListener('click', arm)
 $('room-code').addEventListener('click', openInvite)
@@ -520,9 +533,8 @@ document.addEventListener('visibilitychange', () => {
     pause(true)
   }
 })
-window.addEventListener('pagehide', () => {
-  if (state.role === 'viewer') room?.leave()
-})
+// Leaving frees the camera slot or viewer seat now; a reload restores the room from memory.
+window.addEventListener('pagehide', () => room?.leave())
 window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload() })
 
 // ---------- Start: restore a room, follow an invite link, or show the keypad ----------
@@ -534,7 +546,7 @@ if (params.has('room')) {
   const query = params.toString().replace(/(^|&)demo=(?=&|$)/, '$1demo')
   history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}`)
 }
-if (saved?.role === 'camera' && /^\d{6}$/.test(saved.code)) enterCamera(saved.code)
-else if (saved?.role === 'viewer' && /^\d{6}$/.test(saved.code)) void join(saved.code)
+if (saved?.role === 'camera' && /^\d{6}$/.test(saved.code)) void enterCamera(saved)
+else if (saved?.role === 'viewer' && /^\d{6}$/.test(saved.code)) void join(saved.code, saved.token)
 else if (invited.length === 6) void join(invited)
 else render()
