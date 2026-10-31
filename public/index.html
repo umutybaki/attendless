@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Share a QR code from your phone and open its link on any device.">
+  <meta name="color-scheme" content="dark light">
+  <title>Attendless — Attendance QR</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js" defer></script>
+  <script src="./vendor/jsQR.js" defer></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="./">Attendless</a><a id="language" href="?lang=tr" lang="tr">Türkçe</a></header>
+  <main>
+    <h1 data-copy="title">Attendless</h1>
+    <p data-copy="subtitle"></p>
+    <p id="unavailable" role="status" data-copy="unavailable" hidden></p>
+    <noscript>Enable JavaScript to join a room and view QR links.</noscript>
+    <form id="join-form">
+      <label for="room-code" data-copy="code"></label>
+      <input id="room-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+      <button id="join" data-copy="join" disabled></button>
+      <p class="muted" data-copy="hint"></p>
+    </form>
+    <section id="room" aria-label="QR room" hidden>
+      <p id="status" role="status"></p>
+      <video id="video" autoplay playsinline muted hidden></video>
+      <p class="muted" data-copy="quality"></p>
+      <div id="qr-result" aria-live="polite" aria-atomic="true">
+        <p id="no-qr" data-copy="noQR"></p>
+        <div id="scan" hidden>
+          <a id="qr-link" class="primary" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-copy="open"></a>
+          <p id="qr-url"></p>
+          <p id="scanned-at" class="muted"></p>
+        </div>
+      </div>
+      <p class="muted" data-copy="linkHint"></p>
+      <div class="actions">
+        <button id="share" data-copy="share" hidden></button>
+        <button id="stop" data-copy="stop" hidden></button>
+        <button id="leave" data-copy="leave"></button>
+      </div>
+      <p id="device-hint" class="muted"></p>
+    </section>
+    <p id="error" role="alert" hidden></p>
+  </main>
+</body>
+</html>
