@@ -1,6 +1,6 @@
 # Attendless
 
-Share a silent phone camera feed with viewers and open scanned QR links on any device. The frontend is plain HTML, CSS and browser JavaScript, with no React, Next.js, Tailwind, bundler or frontend server in production. The browser libraries are [jsQR](https://github.com/cozmo/jsQR) (reading codes) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (draws the demo slide's QR; only `?demo` loads it); the static build copies their pinned scripts and licenses locally, with no CDN dependency.
+Share a silent phone camera feed with viewers and open scanned QR links on any device. The frontend is plain HTML, CSS and browser JavaScript, with no React, Next.js, Tailwind, bundler or frontend server in production. The browser libraries are [jsQR](https://github.com/cozmo/jsQR) (reading codes), [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (draws the demo slide's QR; only `?demo` loads it) and the [Aptabase](https://aptabase.com) web SDK (cookieless analytics, EU region; loaded only when a key is configured). The static build copies their pinned scripts and licenses locally, with no CDN dependency.
 
 English is the default; `?lang=tr` selects Turkish. Creating a room makes your device the camera; everyone who enters its six-digit code watches. Codes are public, not private access control.
 

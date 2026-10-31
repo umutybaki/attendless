@@ -155,6 +155,8 @@ Add two more `production` variables:
 | `DOMAIN_NAME` | `attendless.app` |
 | `CERTIFICATE_ARN` | the us-east-1 certificate ARN from step 4 |
 
+Optionally, add `APTABASE_APP_KEY` (an EU Aptabase app key, `A-EU-…`) to turn on analytics. See [DESIGN.md](DESIGN.md#analytics) for what's sent.
+
 Then rerun the deploy: **Actions → Test and deploy Attendless → Run workflow → main**. This run:
 
 - adds `attendless.app` and `www.attendless.app` to CloudFront with the certificate;

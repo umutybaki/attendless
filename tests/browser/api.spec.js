@@ -4,9 +4,9 @@ import { test, expect, typeCode } from './fixtures.js'
 // these tests check requests, signaling and UI, not real network traversal.
 const apiUrl = 'https://attendless-test.lambda-url.eu-central-1.on.aws/'
 
-async function setup(page, reply) {
+async function setup(page, reply, config = {}) {
   const calls = []
-  await page.route('**/config.js', (route) => route.fulfill({ contentType: 'text/javascript', body: `window.ATTENDLESS_CONFIG = ${JSON.stringify({ apiUrl })};` }))
+  await page.route('**/config.js', (route) => route.fulfill({ contentType: 'text/javascript', body: `window.ATTENDLESS_CONFIG = ${JSON.stringify({ apiUrl, ...config })};` }))
   await page.route(`${apiUrl}**`, async (route) => {
     const body = route.request().postDataJSON()
     calls.push(body)
@@ -115,4 +115,61 @@ test('an unreachable server is reported, not mistaken for a wrong code', async (
   await expect(page.locator('#home-status')).toHaveText('Couldn’t reach Attendless. Check your connection and try again.')
   await page.getByRole('button', { name: 'New room' }).click()
   await expect(page.locator('#home-status')).toHaveText('Couldn’t reach Attendless. Check your connection and try again.')
+})
+
+const aptabaseKey = 'A-EU-0000000000'
+async function collectEvents(page) {
+  const events = []
+  await page.route('https://eu.aptabase.com/**', async (route) => {
+    events.push({ key: route.request().headers()['app-key'], ...route.request().postDataJSON() })
+    await route.fulfill({ status: 200, body: '' })
+  })
+  return events
+}
+const names = (events) => events.map((event) => event.eventName)
+
+test('analytics report the funnel without room codes, tokens or links', async ({ context }) => {
+  const camera = await context.newPage()
+  const cameraEvents = await collectEvents(camera)
+  await setup(camera, ({ action }) => ({
+    create: [200, { code: '482913', token: 'h'.repeat(64) }],
+    status: [200, { live: false, viewers: 0 }],
+    claim: [200, { epoch: 'e1' }],
+    heartbeat: [200, { viewers: 1 }],
+    peers: [200, { peers: [] }],
+  })[action], { aptabaseKey })
+  await camera.goto('/?demo')
+  await camera.getByRole('button', { name: 'New room' }).click()
+  await camera.getByRole('button', { name: 'Copy link' }).click()
+  await camera.getByRole('button', { name: 'Done' }).click()
+  await expect.poll(() => names(cameraEvents), { timeout: 15000 }).toContain('first_link_scanned')
+  await camera.getByRole('button', { name: 'End' }).click()
+  await camera.getByRole('button', { name: 'Tap to end' }).click()
+  await expect.poll(() => names(cameraEvents)).toContain('room_ended')
+
+  const viewer = await context.newPage()
+  const viewerEvents = await collectEvents(viewer)
+  await setup(viewer, ({ action, code }) => ({
+    join: code === '482913' ? [200, { token: 'v'.repeat(64) }] : [404, {}],
+    status: [200, { live: true, paused: false, viewers: 3, epoch: 'e1' }],
+    connection: [200, { answer: 'host-answer' }],
+  })[action], { aptabaseKey })
+  await viewer.goto('/')
+  await typeCode(viewer, '000000')
+  await typeCode(viewer, '482913')
+  await expect(viewer.locator('#presence-text')).toHaveText('Live · 3')
+  await viewer.evaluate(() => window.rtc.channels.at(-1).onmessage({ data: JSON.stringify({ url: 'https://forms.example.com/r/ABC123', scannedAt: Date.now() }) }))
+  await viewer.getByRole('button', { name: 'Copy link' }).click()
+  await expect.poll(() => names(viewerEvents)).toContain('link_opened')
+
+  // The demo camera may read its code before or after the invite is copied.
+  expect(names(cameraEvents).sort()).toEqual(['app_opened', 'camera_started', 'first_link_scanned', 'invite_shared', 'room_created', 'room_ended'])
+  expect(names(viewerEvents)).toEqual(['app_opened', 'join_failed', 'room_joined', 'link_opened'])
+  const all = [...cameraEvents, ...viewerEvents]
+  expect(all.every((event) => event.key === aptabaseKey && event.systemProps.isDebug === true)).toBe(true)
+  expect(cameraEvents.at(-1).props).toMatchObject({ links: expect.any(Number), peak_viewers: expect.any(Number), minutes: 0 })
+  expect(viewerEvents[1].props).toEqual({ via: 'code', reason: 'not_found' })
+  const sent = JSON.stringify(all)
+  for (const secret of ['482913', '482 913', 'h'.repeat(64), 'v'.repeat(64), 'forms.example.com', 'ABC123', '/r/'])
+    expect(sent).not.toContain(secret)
 })

@@ -14,7 +14,13 @@ const page = await get('/')
 check((await page.text()).includes('id="new-room"'), 'Frontend was not uploaded')
 check(page.headers.get('strict-transport-security')?.includes('max-age='), 'Security headers are missing')
 check(page.headers.get('permissions-policy')?.includes('camera=(self)'), 'Permissions-Policy must allow the camera')
-check((await (await get('/config.js')).text()).includes(JSON.stringify(apiUrl)), 'Frontend points at the wrong API')
+const config = await (await get('/config.js')).text()
+check(config.includes(JSON.stringify(apiUrl)), 'Frontend points at the wrong API')
+const aptabaseKey = process.env.ATTENDLESS_APTABASE_KEY
+if (aptabaseKey) {
+  check(config.includes(JSON.stringify(aptabaseKey)), 'Frontend is missing the analytics key')
+  await get('/vendor/aptabase.js')
+}
 await get('/vendor/jsQR.js')
 
 const preflight = await fetch(apiUrl, {

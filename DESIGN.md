@@ -70,6 +70,32 @@ There are two transports behind that interface:
   - Tokens live in `sessionStorage`, so a reload keeps your role.
 - **Same browser** (no API configured). The room runs over a `BroadcastChannel`, with JPEG frames standing in for video. It's for development and the browser tests.
 
+## Analytics
+
+Aptabase (EU region) runs when `config.js` carries a key (`ATTENDLESS_APTABASE_KEY` at build time, the `APTABASE_APP_KEY` GitHub variable in production).
+
+- **No cookies or storage.** The SDK sets nothing; its session ID lives in memory and resets after an hour idle.
+- **Debug data is kept separate.** Demo mode and localhost report as debug data, which the Aptabase dashboard shows apart from real use.
+- **Every event goes through `public/analytics.js`.** `api.spec.js` fails if a room code, token or scanned link ever appears in a payload.
+
+| Event | Who | Properties |
+|---|---|---|
+| `app_opened` | everyone | `lang`, `via` (home, invite, reload) |
+| `room_created` | camera | none |
+| `camera_started` | camera | `zoom`, `torch` (supported or not) |
+| `camera_failed` | camera | `reason` (blocked, missing) |
+| `invite_shared` | anyone | `method` (share, copy), `role` |
+| `first_link_scanned` | camera | `seconds` from camera start |
+| `room_ended` | camera | `minutes`, `links`, `peak_viewers` |
+| `room_joined` | viewer | `via` (code, invite, reload) |
+| `join_failed` | viewer | `via`, `reason` (not_found, unreachable) |
+| `link_opened` | anyone | `action` (open, copy), `role` |
+
+**Volume.** A 10-minute room with 1 camera and 4 viewers sends about 18 events: 6 from the camera and 3 per viewer.
+
+- **Scans are summarized.** Only the first scanned link is an event. Rotating codes would otherwise add one event every few seconds, so the total is reported in `room_ended`.
+- **`room_ended` needs the End button.** It fires only when the host taps End. A camera page that is simply closed leaves no summary, because the room lives on until it expires.
+
 ## Research
 
 Patterns studied on Mobbin:
