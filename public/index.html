@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="Point one phone at a QR code. Everyone in the room gets its link.">
+  <!-- Same policy in development, tests and production. The API is a Lambda Function URL (*.on.aws); WebRTC is not governed by CSP. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://*.on.aws; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#EEEFEA" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0C0D0A" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Attendless">
+  <title>Attendless</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2316170F'/%3E%3Cpath d='M8 13V8h5M19 8h5v5M24 19v5h-5M13 24H8v-5' fill='none' stroke='%23FFCF26' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23FFCF26'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js" defer></script>
+  <script src="./vendor/jsQR.js" defer></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <svg width="0" height="0" class="sprite" aria-hidden="true">
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-erase" viewBox="0 0 24 24"><path d="M9.5 5H20v14H9.5L3 12z"/><path d="M12.5 9.5l5 5M17.5 9.5l-5 5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6.5A2.5 2.5 0 0 0 13 4H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5h2"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M7 17L17 7M8.5 7H17v8.5"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 12v6.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V12"/></symbol>
+    <symbol id="i-torch" viewBox="0 0 24 24"><path d="M8 3h8v3.5l-2.5 3.5V21h-3V10L8 6.5zM8 6.5h8"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13L18.5 12z"/></symbol>
+  </svg>
+
+  <div id="app" data-view="home">
+    <!-- Home: both choices on one surface. Six digits join; the yellow key creates. -->
+    <section id="home" class="view home">
+      <header class="bar">
+        <span class="mark"><svg class="i"><use href="#i-mark"/></svg>Attendless<span id="demo-badge" class="badge" data-copy="demo" hidden></span></span>
+        <a id="language" class="pill" href="?lang=tr" hreflang="tr" lang="tr">TR</a>
+      </header>
+      <div class="readout">
+        <p class="eyebrow" data-copy="prompt"></p>
+        <div id="code" class="code brackets" data-state="idle" aria-hidden="true">
+          <span class="group"><span class="slot"></span><span class="slot"></span><span class="slot"></span></span>
+          <span class="group"><span class="slot"></span><span class="slot"></span><span class="slot"></span></span>
+        </div>
+        <p id="home-status" class="status" role="status"></p>
+      </div>
+      <div class="keypad" role="group" data-label="keypad">
+        <button class="key" data-digit="1">1</button>
+        <button class="key" data-digit="2">2</button>
+        <button class="key" data-digit="3">3</button>
+        <button class="key" data-digit="4">4</button>
+        <button class="key" data-digit="5">5</button>
+        <button class="key" data-digit="6">6</button>
+        <button class="key" data-digit="7">7</button>
+        <button class="key" data-digit="8">8</button>
+        <button class="key" data-digit="9">9</button>
+        <button id="new-room" class="key create"><svg class="i"><use href="#i-plus"/></svg><span data-copy="newRoom"></span></button>
+        <button class="key" data-digit="0">0</button>
+        <button id="erase" class="key erase" data-label="erase"><svg class="i"><use href="#i-erase"/></svg></button>
+      </div>
+      <p class="foot" data-copy="newRoomHint"></p>
+    </section>
+
+    <!-- Room: one shell for both roles (#app[data-role] = camera | viewer). -->
+    <section id="room" class="view room" hidden>
+      <div id="stage" class="stage" data-note="">
+        <video id="feed" autoplay playsinline muted></video>
+        <div id="reticle" class="reticle brackets" data-lock="" aria-hidden="true"><span id="reticle-label" class="reticle-label"></span></div>
+        <div id="note" class="note" hidden>
+          <div class="note-frame brackets"></div>
+          <p id="note-title" class="note-title"></p>
+          <p id="note-hint" class="note-hint"></p>
+          <button id="note-action" class="pill strong" hidden></button>
+        </div>
+      </div>
+      <header class="room-bar">
+        <button id="leave" class="round" data-label="leave"><svg class="i"><use href="#i-close"/></svg></button>
+        <button id="end" class="pill glass end" data-copy="end"></button>
+        <button id="room-code" class="code-chip" data-label="invite"><svg class="i"><use href="#i-share"/></svg><span id="room-code-text"></span></button>
+        <span id="presence" class="presence" data-presence="waiting"><i class="dot"></i><span id="presence-text"></span></span>
+      </header>
+      <div class="dock">
+        <article id="link" class="link brackets" data-empty="true">
+          <div class="link-empty">
+            <p class="link-title" data-copy="noLink"></p>
+            <p class="link-hint" data-copy="noLinkHint"></p>
+          </div>
+          <div class="link-full" aria-live="polite">
+            <div class="link-head">
+              <span id="link-eyebrow" class="eyebrow"></span>
+              <time id="link-age" class="age"></time>
+            </div>
+            <p id="link-host" class="link-host"></p>
+            <p id="link-path" class="link-path"></p>
+            <div class="link-actions">
+              <a id="link-open" class="action primary" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><span data-copy="open"></span><svg class="i"><use href="#i-open"/></svg></a>
+              <button id="link-copy" class="action square" data-label="copy"><svg class="i"><use href="#i-copy"/></svg></button>
+            </div>
+          </div>
+        </article>
+        <div class="controls">
+          <button id="torch" class="round glass" aria-pressed="false" data-label="torch"><svg class="i"><use href="#i-torch"/></svg></button>
+          <div id="zoom" class="zoom glass" role="group" data-label="zoom"></div>
+          <button id="pause" class="round glass" aria-pressed="false" data-label="pause"><svg class="i"><use href="#i-pause"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <div id="invite" class="sheet" role="dialog" aria-modal="true" aria-labelledby="invite-title" hidden>
+      <div class="sheet-scrim" data-close></div>
+      <div class="sheet-panel">
+        <p id="invite-title" class="eyebrow" data-copy="inviteTitle"></p>
+        <p id="invite-code" class="big-code brackets"></p>
+        <p class="sheet-hint" data-copy="inviteHint"></p>
+        <div class="sheet-actions">
+          <button id="invite-share" class="action primary"><svg class="i"><use href="#i-share"/></svg><span data-copy="share"></span></button>
+          <button id="invite-copy" class="action"><svg class="i"><use href="#i-copy"/></svg><span data-copy="copyLink"></span></button>
+        </div>
+        <button id="invite-done" class="pill" data-close data-copy="done"></button>
+      </div>
+    </div>
+
+    <p id="toast" class="toast" role="status" hidden></p>
+  </div>
+  <noscript>Attendless needs JavaScript to join rooms and show links.</noscript>
+</body>
+</html>
