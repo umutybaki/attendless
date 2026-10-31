@@ -22,6 +22,7 @@ On the Free plan, nothing on the Worker side can bill: once a daily limit is rea
 3. Under **Account resources**, pick your account. Under **Zone resources**, pick **Specific zone → attendless.app** (the template's Workers Routes permission lets the deploy attach the domain).
 4. Create the token and copy it. It's shown once.
 5. Copy your **Account ID** too: it's on the account's home page, or in the URL after `dash.cloudflare.com/`.
+6. Make sure the account has a `workers.dev` subdomain: open **Workers & Pages**. If **Your subdomain** shows one (`<name>.workers.dev`), you're done; otherwise set one there. Wrangler asks for it on a first deploy, and in GitHub Actions nobody can answer, so the deploy would fail.
 
 ## 2. Turn on the TURN relay (once, recommended)
 
