@@ -1,8 +1,10 @@
 # Attendless
 
-Share a silent phone camera feed with viewers and open scanned QR links on any device. The frontend is plain HTML, CSS and browser JavaScript, with no React, Next.js, Tailwind, bundler or frontend server in production. [jsQR](https://github.com/cozmo/jsQR) is the sole browser library; the static build copies its pinned script and license locally, with no CDN dependency.
+Share a silent phone camera feed with viewers and open scanned QR links on any device. The frontend is plain HTML, CSS and browser JavaScript, with no React, Next.js, Tailwind, bundler or frontend server in production. The browser libraries are [jsQR](https://github.com/cozmo/jsQR) (reading codes) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (draws the demo slide's QR; only `?demo` loads it); the static build copies their pinned scripts and licenses locally, with no CDN dependency.
 
-English is the default; `?lang=tr` selects Turkish. The trial room code is **313131**. Phones can share; desktop and tablet browsers watch. The code is public, not private access control.
+English is the default; `?lang=tr` selects Turkish. Creating a room makes your device the camera; everyone who enters its six-digit code watches. Codes are public, not private access control.
+
+> **The frontend is ahead of the backend.** The redesigned UI ([DESIGN.md](DESIGN.md)) runs rooms between tabs of one browser through `public/room.js`; it does not call the Lambda yet. Add `?demo` to try every screen without a camera. Do not deploy this frontend until `room.js` is backed by the API.
 
 ## Development
 
@@ -16,7 +18,7 @@ npm test
 ATTENDLESS_API_URL=https://YOUR_FUNCTION.lambda-url.us-east-1.on.aws/ npm run dev
 ```
 
-Without `ATTENDLESS_API_URL`, the site still runs but room entry is disabled. The variable is a public endpoint, not a secret. The development server binds to loopback on port 3000. Local camera access works on localhost; a phone accessing a computer's LAN IP needs HTTPS. Production uses CloudFront HTTPS. Do not use a production room for isolated test sessions.
+The current frontend ignores `ATTENDLESS_API_URL` until the backend is wired in. The variable is a public endpoint, not a secret. The development server binds to loopback on port 3000. Local camera access works on localhost; a phone accessing a computer's LAN IP needs HTTPS. Production uses CloudFront HTTPS. Do not use a production room for isolated test sessions.
 
 ```sh
 npx playwright install --with-deps chromium
@@ -40,7 +42,7 @@ See [MIGRATION.md](MIGRATION.md) for AWS/GitHub setup, deployment, cutover, cust
 
 ## Layout
 
-- `public/`: static frontend, translations and WebRTC lifecycle.
+- `public/`: static frontend: UI (`app.js`, `styles.css`), translations, room transport (`room.js`), camera and scanner (`camera.js`), demo mode (`demo.js`).
 - `backend/`: Go Lambda, existing protocol tests and architecture notes.
 - `infra/template.yaml`: independent AWS stack.
 - `scripts/`: static build, local server, Lambda packaging, deployment and deployed smoke check.
