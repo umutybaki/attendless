@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Room, GRACE_MS, LIFETIME_MS, OFFER_EVERY_MS } from '../worker/room.js'
+import { Room, GRACE_MS, LIFETIME_MS, OFFER_EVERY_MS, MAX_VIEWERS } from '../worker/room.js'
 import { iceServers, STUN } from '../worker/ice.js'
 
 // The Durable Object's logic against an in-memory runtime: storage, alarms and
@@ -205,6 +205,95 @@ test('a second camera tab takes over and a code in use is not reissued', async (
   await t.room.webSocketClose(t.host)
   assert.equal(t.ctx.data.get('room').hostAway, 0, 'the old tab closing does not take the camera away')
   assert.equal((await t.call('/create')).status, 409)
+})
+
+test('concurrent creates cannot hand out two host tokens for the same code', async () => {
+  const t = await setup()
+  const results = await Promise.all([t.call('/create'), t.call('/create')])
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409])
+  const host = await t.connect(results.find((r) => r.status === 200).body.token)
+  assert.equal(host.last('welcome').role, 'host')
+})
+
+test('reusing an expired code evicts old sockets and ignores their delayed events', async () => {
+  const t = await hosted()
+  const viewer = await t.connect((await t.call('/join')).body.token)
+  await t.drop(t.host)
+  t.clock.now += LIFETIME_MS
+  // The expiry alarm may be late. Creating under this code must clean up anyway.
+  const fresh = await t.call('/create')
+  assert.equal(viewer.closedWith, 4410)
+  const host = await t.connect(fresh.body.token)
+  assert.equal(host.last('welcome').state.viewers, 0)
+  await t.say(viewer, { type: 'offer', epoch: 'e1', sdp: 'v=0 stale offer' })
+  await t.room.webSocketClose(t.host)
+  assert.equal(t.ctx.data.get('room').hostAway, 0)
+})
+
+test('a replaced camera cannot end or change the room with queued messages', async () => {
+  const t = await hosted()
+  const second = await t.connect(t.token)
+  await t.say(second, { type: 'live', epoch: 'new', paused: false })
+  await t.say(t.host, { type: 'live', epoch: 'old', paused: false })
+  await t.say(t.host, { type: 'end' })
+  assert.equal(t.ctx.data.get('room').epoch, 'new')
+})
+
+test('a socket error followed by close does not extend the camera grace period', async () => {
+  const t = await hosted()
+  await t.say(t.host, { type: 'live', epoch: 'e1', paused: false })
+  t.host.close(1006)
+  await t.room.webSocketError(t.host)
+  const alarm = t.ctx.alarm
+  t.clock.now += 5000
+  await t.room.webSocketClose(t.host)
+  assert.equal(t.ctx.alarm, alarm)
+})
+
+test('welcome uses the latest state after a slow ICE request', async () => {
+  const t = await hosted()
+  let release
+  t.room.ice = null
+  t.room.fetchIce = () => new Promise((resolve) => { release = resolve })
+  const joining = t.connect((await t.call('/join')).body.token)
+  await new Promise((resolve) => setImmediate(resolve))
+  await t.say(t.host, { type: 'live', epoch: 'new', paused: true })
+  release(STUN)
+  const viewer = await joining
+  assert.deepEqual(viewer.last('welcome').state, { live: true, paused: true, viewers: 1, epoch: 'new' })
+})
+
+test('ten viewers fit; a racing eleventh viewer is refused and a freed seat can be used', async () => {
+  const t = await hosted()
+  const tokens = await Promise.all(Array.from({ length: MAX_VIEWERS + 1 }, async () => (await t.call('/join')).body.token))
+  const viewers = []
+  for (const token of tokens) viewers.push(await t.connect(token))
+  assert.equal(viewers.filter((ws) => ws.last('welcome')).length, MAX_VIEWERS)
+  assert.equal(viewers.at(-1).closedWith, 4429)
+  assert.equal((await t.call('/join')).status, 409)
+  const replacement = await t.connect(tokens[0])
+  assert.equal(replacement.last('welcome').state.viewers, MAX_VIEWERS, 'reconnecting reclaims its seat before the old socket closes')
+  assert.equal(viewers[0].closedWith, 4409)
+  await t.drop(replacement)
+  const joined = await t.call('/join')
+  assert.equal(joined.status, 200)
+  assert.equal((await t.connect(joined.body.token)).last('welcome').state.viewers, MAX_VIEWERS)
+})
+
+test('parallel welcomes share one ICE request and ending does not resurrect storage', async () => {
+  const t = await hosted()
+  let release, requests = 0
+  t.room.ice = null
+  t.room.fetchIce = () => { requests++; return new Promise((resolve) => { release = resolve }) }
+  const token = (await t.call('/join')).body.token
+  const a = t.connect(token), b = t.connect(token)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(requests, 1)
+  await t.say(t.host, { type: 'end' })
+  release(STUN)
+  const viewers = await Promise.all([a, b])
+  assert.ok(viewers.every((ws) => !ws.last('welcome')))
+  assert.equal(t.ctx.data.size, 0)
 })
 
 test('TURN credentials are shared by the room and reissued before they expire', async () => {

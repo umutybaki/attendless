@@ -10,10 +10,10 @@ export { Room }
 //   POST /api/rooms/:code/join      -> { token } | 404   join as a viewer
 //   GET  /api/rooms/:code/socket    -> WebSocket         the room's live connection (see room.js)
 const CODE_ATTEMPTS = 5
-const json = (status, body) =>
+const json = (status, body, headers = {}) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers },
   })
 const randomCode = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0')
 
@@ -28,14 +28,23 @@ export default {
     // The site and API share an origin. Browsers send Origin with WebSockets
     // (which have no CORS) and POSTs; refuse other sites. Non-browser clients send none.
     const origin = request.headers.get('Origin')
-    if (origin && origin !== url.origin && !local(origin)) return json(403, { error: 'Forbidden origin' })
+    if (origin && origin !== url.origin && !(local(url.origin) && local(origin))) return json(403, { error: 'Forbidden origin' })
     try {
-      if (url.pathname === '/api/rooms' && request.method === 'POST') return await create(env)
+      // Generous per-IP limits accommodate shared campus Wi-Fi. Checks happen
+      // before touching a Durable Object, including for guesses at absent rooms.
+      const key = `attendless:${request.headers.get('CF-Connecting-IP') || 'local'}`
+      if (env.API_RATE_LIMITER && !(await env.API_RATE_LIMITER.limit({ key })).success)
+        return json(429, { error: 'Too many requests' }, { 'Retry-After': '60' })
+      if (url.pathname === '/api/rooms' && request.method === 'POST') {
+        if (env.CREATE_RATE_LIMITER && !(await env.CREATE_RATE_LIMITER.limit({ key })).success)
+          return json(429, { error: 'Too many requests' }, { 'Retry-After': '60' })
+        return await create(env)
+      }
       const match = url.pathname.match(/^\/api\/rooms\/(\d{6})\/(join|socket)$/)
       if (!match) return json(404, { error: 'Not found' })
       const [, code, action] = match
       if (action === 'join' && request.method === 'POST') return await room(env, code).fetch('https://room/join', { method: 'POST' })
-      if (action === 'socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+      if (action === 'socket' && request.method === 'GET' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
         return await room(env, code).fetch('https://room/socket', { headers: request.headers })
       }
       return json(405, { error: 'Method not allowed' })

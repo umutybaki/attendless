@@ -1,12 +1,12 @@
 # Attendless backend
 
-Whoever creates a room is its camera; everyone who enters the room's six-digit code watches. The camera shares a silent feed and the links of the QR codes it reads. The frontend lives in `../public` ([DESIGN.md](../DESIGN.md)).
+Whoever creates a room is its camera; up to ten people can enter the room's six-digit code to watch. The camera shares a silent feed and the links of the QR codes it reads. The English-only frontend lives in `../public`.
 
 The camera scans its full-resolution capture (1280×720 requested, 15 fps preferred) locally with jsQR up to 10 times per second, independently of the video it sends. Viewers only need to see the scene, so each WebRTC video sender is capped at 400 kbps and 15 fps, with `maintain-resolution` so bandwidth adaptation lowers the frame rate before the resolution. That is about 30 MB per viewer per 10 minutes at most, plus protocol overhead; the phone uploads a separate stream to each viewer. QR links travel immediately over an unordered WebRTC data channel independently of the video. Only HTTP(S) links are clickable. The last scanned link stays visible, with its scan time, until a different QR link is scanned. Keeping a link visible doesn't extend the QR provider's validity. Viewers joining later receive the latest scan while the camera is connected. A reload keeps the room and its role; leaving clears the local link.
 
 ## Architecture
 
-- **One Cloudflare Worker** (`index.js`) serves the static site from `dist/` and the API under `/api/`. Static files are served without running the Worker. `POST /api/rooms` creates a room (the creator gets the host token), `POST /api/rooms/:code/join` returns a viewer token or 404, and `GET /api/rooms/:code/socket` opens the room's WebSocket. The API refuses requests whose `Origin` is another site (WebSockets have no CORS).
+- **One Cloudflare Worker** (`index.js`) serves the static site from `dist/` and the API under `/api/`. Static files are served without running the Worker. `POST /api/rooms` creates a room (the creator gets the host token), `POST /api/rooms/:code/join` returns a viewer token, 404 for a missing room or 409 for a full room, and `GET /api/rooms/:code/socket` opens the room's WebSocket. The socket handshake enforces capacity too, with close code 4429. The API refuses other origins; loopback exceptions apply only to local development. Per-IP throttles run before touching room storage: 60 creates/minute and 1,200 API requests/minute, per Cloudflare location. These approximate limits allow shared campus networks and reduce abuse; they are not spending caps.
 - **One Durable Object per code** (`room.js`), placed in Eastern Europe, nearest Turkey. It stores a single record in its own storage: the room's random id, the SHA-256 of the host token, the current stream generation (epoch), pause, and when the camera was last connected. Viewer tokens are the room id plus a random part, so the room stores nothing per viewer. There is no database, and nothing to clean up: an ended or expired room erases itself.
 - **Everyone keeps one WebSocket** through the WebSocket Hibernation API. The object sleeps between messages, so an idle room costs nothing and nobody polls. Presence is the set of open sockets. Clients ping every 25 seconds to notice dead connections; the runtime answers without waking the object, and those pings are not billed. The message protocol is described at the top of `room.js`.
 - **Signaling only.** The camera announces a stream generation; each viewer sends one offer for it, which the room relays to the camera; the camera's answer goes back to that viewer alone. Offers are limited to one per viewer socket every 2 seconds. When a viewer leaves, the camera is told to close that connection. No images, QR content, audio or recordings pass through Cloudflare.
@@ -17,22 +17,11 @@ Room codes are public and guessable, not access control. Tokens are random and k
 
 ## Development and deployment
 
-`npm test` runs the room against an in-memory runtime (`tests/worker.test.js`); `npm run test:e2e` also runs the real Worker in local workerd (`tests/browser/worker.spec.js`). `npm run dev:worker` serves the site and API locally on port 8787. `npm run deploy` builds the site with the API at `/api`, deploys with Wrangler and runs `scripts/smoke.mjs` against the live site. See [DEPLOY.md](../DEPLOY.md).
+`npm test` runs the room against an in-memory runtime (`tests/worker.test.js`) and checks routing and throttles; `npm run test:e2e` also runs the real Worker in local workerd (`tests/browser/worker.spec.js`). `npm run dev:worker` serves the site and API locally on port 8787. `npm run deploy` builds the site with the API at `/api`, deploys with Wrangler and runs `scripts/smoke.mjs` against the live site.
 
 ## Cost
 
-Everything here fits Cloudflare's **Workers Free plan**, which stops requests when a daily limit is reached rather than billing. A room with 1 camera and 6 viewers for 45 minutes uses roughly 17 Worker requests (the POSTs and WebSocket upgrades) and about 20 Durable Object requests: the same connections, WebSocket messages billed at 1/20 of a request each, and an alarm or two. Its compute time is a few seconds at most, because the object only runs while handling a message.
-
-| | Free plan limit | One room | Rooms per day within it |
-|---|---|---|---|
-| Worker requests | 100,000/day | ≈ 17 | ≈ 5,800 |
-| Durable Object requests | 100,000/day | ≈ 20 | ≈ 5,000 |
-| Durable Object compute | 13,000 GB-s/day | ≲ 1.5 GB-s | ≈ 8,000 |
-| Durable Object storage | 5 GB | < 1 KB while open | — |
-
-A busy university (about 50 rooms a weekday, 1,100 a month) uses about 1% of these limits. Static files are free and unlimited.
-
-The **TURN relay** is the only part that can bill: $0.05/GB after 1,000 GB a month free. If 15% of viewers need it, a room like the one above relays about 80 MB, so 1,100 rooms relay about 90 GB a month, which is free. Without TURN keys nothing can bill, but some restrictive networks can't connect.
+Run `npm run cost` for a reproducible three-university planning estimate. See [REVIEW.md](../REVIEW.md) for assumptions, relay scenarios, current pricing sources and limitations. Normal signaling traffic should fit Workers Free at the modeled usage, but quotas also include Durable Object duration and SQLite reads/writes. Exhausting a Free quota interrupts service. TURN is separately metered and may bill even when Workers is on Free. Other projects on the account share allowances.
 
 ## Manual acceptance check
 

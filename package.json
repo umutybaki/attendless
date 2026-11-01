@@ -12,6 +12,7 @@
     "dev:worker": "ATTENDLESS_API_URL=/api ATTENDLESS_OUT=.build/site node scripts/build.mjs && wrangler dev --assets .build/site --ip 127.0.0.1 --port 8787 --infer-origin-from-routes=false",
     "test": "node --test tests/*.test.js",
     "test:e2e": "playwright test",
+    "cost": "node scripts/cost.mjs",
     "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {

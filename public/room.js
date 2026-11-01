@@ -43,10 +43,13 @@ class Line {
     this.connect()
   }
   connect() {
+    if (this.closed || this.ws) return
     clearTimeout(this.retry)
     const url = endpoint(`rooms/${this.code}/socket`)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = (this.ws = new WebSocket(url))
+    // CONNECTING and a successful upgrade without a welcome can both stall.
+    const handshake = setTimeout(() => ws.close(4000, 'No welcome'), 10000)
     let answered = true
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'hello', token: this.token }))
@@ -63,20 +66,22 @@ class Line {
       let message
       try { message = JSON.parse(data) } catch { return }
       if (message.type === 'welcome') {
+        clearTimeout(handshake)
         this.ready = true
         this.attempt = 0
       }
       this.handlers.message(message)
     }
     ws.onclose = ({ code }) => {
+      clearTimeout(handshake)
       clearInterval(this.pinger)
       if (this.ws !== ws) return
       this.ws = null
       this.ready = false
       if (this.closed) return
-      if (code === 4410 || code === 4409 || code === 4400) {
+      if ([4410, 4409, 4400, 4429].includes(code)) {
         this.close()
-        return this.handlers.gone()
+        return this.handlers.gone(code)
       }
       this.handlers.down?.()
       const delay = Math.min(15000, 500 * 2 ** this.attempt++) * (0.75 + Math.random() / 2)
@@ -89,13 +94,14 @@ class Line {
   close() {
     this.closed = true
     clearTimeout(this.retry)
+    clearInterval(this.pinger)
     document.removeEventListener('visibilitychange', this.wake)
     window.removeEventListener('online', this.wake)
     const ws = this.ws
     this.ws = null
     // Messages sent just before are delivered ahead of the close.
     if (ws?.readyState === WebSocket.OPEN) ws.close(1000)
-    else if (ws) ws.onopen = () => ws.close(1000)
+    else if (ws) ws.close(1000)
   }
 }
 
@@ -103,22 +109,30 @@ class Line {
 class ApiHost extends Room {
   static async open(saved) {
     const { code, token } = saved?.token ? saved : await post('rooms')
-    return new ApiHost(code, token)
+    const room = new ApiHost(code, token)
+    try { await room.welcome } catch (error) { room.close(); throw error }
+    return room
   }
   constructor(code, token) {
     super()
     Object.assign(this, { code, token, epoch: '', paused: false, link: null, stream: null, viewers: 0, iceServers: STUN })
     this.peers = new Map()
     this.channels = new Set()
+    this.welcome = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => this.settle?.(new Error('Unreachable')), 12000)
+      this.settle = (error) => { clearTimeout(timeout); this.settle = null; error ? reject(error) : resolve() }
+    })
     this.line = new Line(code, token, {
       message: (message) => this.receive(message),
-      gone: () => { this.close(); this.emit('ended') },
+      gone: () => { this.settle?.(new APIError(410)); this.close(); this.emit('ended') },
+      down: () => this.settle?.(new Error('Unreachable')),
     })
     // Links go over an unordered, lossy channel, so the latest one repeats.
     this.timer = setInterval(() => this.sendLink(this.link), 500)
   }
   receive(message) {
     if (message.type === 'welcome') {
+      this.settle?.()
       this.iceServers = message.iceServers?.length ? message.iceServers : STUN
       this.count(message.state.viewers)
       // After a reconnect, restore what the room should show.
@@ -132,6 +146,13 @@ class ApiHost extends Room {
     this.stream = stream
     this.hangUp()
     this.epoch = epochId()
+    this.announce()
+  }
+  unpublish() {
+    this.stream = null
+    this.hangUp()
+    this.epoch = ''
+    this.paused = false
     this.announce()
   }
   setState({ paused }) {
@@ -150,7 +171,8 @@ class ApiHost extends Room {
     this.peers.get(peer)?.close()
     this.peers.delete(peer)
   }
-  async answer({ peer, sdp: offer }) {
+  async answer({ peer, epoch: offeredEpoch, sdp: offer }) {
+    if (offeredEpoch !== this.epoch || this.closed) return
     // A repeated offer from the same viewer replaces its connection.
     this.drop(peer)
     if (!this.stream || typeof offer !== 'string') return
@@ -239,8 +261,8 @@ class ApiViewer extends Room {
     })
     this.line = new Line(code, token, {
       message: (message) => this.message(message),
-      gone: () => {
-        if (this.settle) return this.settle(null)
+      gone: (code) => {
+        if (this.settle) return this.settle(null, code === 4429 ? new APIError(409) : null)
         this.close()
         this.emit('ended')
       },
@@ -257,6 +279,9 @@ class ApiViewer extends Room {
       this.iceServers = message.iceServers?.length ? message.iceServers : STUN
       clearTimeout(this.offline)
       if (this.settle) return this.settle(message.state)
+      // Reconnecting replaces the server socket and drops the host's previous
+      // connection, so offer afresh even for the same epoch.
+      this.hangUp()
       this.update(message.state)
     } else if (message.type === 'state') this.update(message.state)
     else if (message.type === 'answer') void this.answered(message)
@@ -266,6 +291,7 @@ class ApiViewer extends Room {
     }
   }
   start() {
+    if (this.closed) return this.emit('ended')
     this.started = true
     this.update(this.last ?? this.welcomed.state)
   }
@@ -293,7 +319,7 @@ class ApiViewer extends Room {
     this.epoch = epoch
     const pc = (this.pc = new RTCPeerConnection({ iceServers: this.iceServers }))
     const channel = pc.createDataChannel('qr', { ordered: false, maxRetransmits: 0 })
-    channel.onmessage = (event) => this.receive(event.data)
+    channel.onmessage = (event) => { if (this.pc === pc && !this.closed) this.receive(event.data) }
     pc.addTransceiver('video', { direction: 'recvonly' })
     pc.ontrack = (event) => {
       if (this.pc !== pc) return
@@ -309,14 +335,18 @@ class ApiViewer extends Room {
         this.adopt(this.last)
       }, delay)
     }
-    pc.onconnectionstatechange = () => { if (this.pc === pc && pc.connectionState === 'failed') again(2000) }
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return
+      if (pc.connectionState === 'connected') clearTimeout(this.again)
+      else if (pc.connectionState === 'failed') again(2000)
+      else if (pc.connectionState === 'disconnected') again(5000)
+    }
     try {
       await pc.setLocalDescription(await pc.createOffer())
       await gatherICE(pc)
       if (this.pc !== pc) return
       this.line.send({ type: 'offer', epoch, sdp: pc.localDescription.sdp })
-      again(15000)
-      pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected' && this.pc === pc) clearTimeout(this.again) })
+      if (pc.connectionState !== 'connected') again(15000)
     } catch {
       if (this.pc === pc) again(2000)
     }
@@ -413,8 +443,12 @@ class LocalHost extends LocalRoom {
     this.stopRelay = relay(video, (frame) => { if (!this.state.paused && this.viewers.size) this.post('frame', { frame }) })
     this.setState({ live: true, paused: false })
   }
-  setState({ paused }) {
-    Object.assign(this.state, { live: !paused, paused: Boolean(paused) })
+  unpublish() {
+    this.stopRelay?.()
+    this.setState({ live: false, paused: false })
+  }
+  setState({ paused, live = !paused }) {
+    Object.assign(this.state, { live: Boolean(live), paused: Boolean(paused) })
     this.post('state', { state: this.snapshot() })
   }
   sendLink(link) {

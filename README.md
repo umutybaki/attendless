@@ -2,9 +2,9 @@
 
 Share a silent phone camera feed with viewers and open scanned QR links on any device. The frontend is plain HTML, CSS and browser JavaScript, with no React, Next.js, Tailwind, bundler or frontend server in production. The browser libraries are [jsQR](https://github.com/cozmo/jsQR) (reading codes), [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (draws the demo slide's QR; only `?demo` loads it). The static build copies their pinned scripts and licenses locally, with no CDN dependency. Optional cookieless analytics go to [Aptabase](https://aptabase.com) (EU region) only when a key is configured.
 
-English is the default; `?lang=tr` selects Turkish. Creating a room makes your device the camera; everyone who enters its six-digit code watches. Codes are public, not private access control.
+The app is English only. Creating a room makes your device the camera; up to ten people can enter its six-digit code to watch. Codes are public, not private access control.
 
-The product and UI are described in [DESIGN.md](DESIGN.md); first deployment, including the `attendless.app` domain, in [DEPLOY.md](DEPLOY.md). Add `?demo` to try every screen without a camera.
+Add `?demo` to try every screen without a camera. See [the backend notes](worker/README.md) for architecture and [the review](REVIEW.md) for verified fixes, remaining device checks and a three-university cost estimate.
 
 ## Development
 
@@ -34,11 +34,11 @@ One Cloudflare Worker serves everything: the static files in `dist/` (served wit
 npm run deploy   # build, wrangler deploy, then a live smoke check
 ```
 
-See [DEPLOY.md](DEPLOY.md) for the one-time Cloudflare, TURN and GitHub setup, the domain, rollback, retiring the old AWS stacks, and what it costs. Every merge to `main` deploys after the tests pass.
+Deployment needs a Cloudflare account and Wrangler authentication. The script accepts `DOMAIN_NAME` to add the custom domain and `www`; TURN and analytics are optional. Every merge to `main` deploys after the tests pass. See [the review](REVIEW.md) for costs; the repository does not contain the previously referenced deployment guide.
 
 ## Layout
 
-- `public/`: static frontend: UI (`app.js`, `styles.css`), translations, room transport (`room.js`), camera and scanner (`camera.js`), demo mode (`demo.js`), analytics (`analytics.js`), security headers (`_headers`).
+- `public/`: static frontend: English UI (`index.html`, `app.js`, `styles.css`), room transport (`room.js`), camera and scanner (`camera.js`), demo mode (`demo.js`), analytics (`analytics.js`), security headers (`_headers`).
 - `worker/`: the Worker (`index.js`), the room Durable Object (`room.js`), TURN credentials (`ice.js`) and architecture notes.
 - `wrangler.jsonc`: the Worker's configuration.
 - `scripts/`: static build, local server, deployment and deployed smoke check.

@@ -38,18 +38,17 @@
     <!-- Home: both choices on one surface. Six digits join; the yellow key creates. -->
     <section id="home" class="view home">
       <header class="bar">
-        <span class="mark"><svg class="i"><use href="#i-mark"/></svg>AttendLess<span id="demo-badge" class="badge" data-copy="demo" hidden></span></span>
-        <a id="language" class="pill" href="?lang=tr" hreflang="tr" lang="tr">TR</a>
+        <span class="mark"><svg class="i"><use href="#i-mark"/></svg>AttendLess<span id="demo-badge" class="badge" hidden>Demo</span></span>
       </header>
       <div class="readout">
-        <p class="eyebrow" data-copy="prompt"></p>
+        <p class="eyebrow">Enter a room code</p>
         <div id="code" class="code brackets" data-state="idle" aria-hidden="true">
           <span class="group"><span class="slot"></span><span class="slot"></span><span class="slot"></span></span>
           <span class="group"><span class="slot"></span><span class="slot"></span><span class="slot"></span></span>
         </div>
         <p id="home-status" class="status" role="status"></p>
       </div>
-      <div class="keypad" role="group" data-label="keypad">
+      <div class="keypad" role="group" aria-label="Room code keypad" title="Room code keypad">
         <button class="key" data-digit="1">1</button>
         <button class="key" data-digit="2">2</button>
         <button class="key" data-digit="3">3</button>
@@ -59,11 +58,11 @@
         <button class="key" data-digit="7">7</button>
         <button class="key" data-digit="8">8</button>
         <button class="key" data-digit="9">9</button>
-        <button id="new-room" class="key create"><svg class="i"><use href="#i-plus"/></svg><span data-copy="newRoom"></span></button>
+        <button id="new-room" class="key create"><svg class="i"><use href="#i-plus"/></svg><span>New room</span></button>
         <button class="key" data-digit="0">0</button>
-        <button id="erase" class="key erase" data-label="erase"><svg class="i"><use href="#i-erase"/></svg></button>
+        <button id="erase" class="key erase" aria-label="Delete digit" title="Delete digit"><svg class="i"><use href="#i-erase"/></svg></button>
       </div>
-      <p class="foot" data-copy="newRoomHint"></p>
+      <p class="foot">New room turns your camera on. Others join with the code.</p>
     </section>
 
     <!-- Room: one shell for both roles (#app[data-role] = camera | viewer). -->
@@ -79,16 +78,16 @@
         </div>
       </div>
       <header class="room-bar">
-        <button id="leave" class="round" data-label="leave"><svg class="i"><use href="#i-close"/></svg></button>
-        <button id="end" class="pill glass end" data-copy="end"></button>
-        <button id="room-code" class="code-chip" data-label="invite"><svg class="i"><use href="#i-share"/></svg><span id="room-code-text"></span></button>
+        <button id="leave" class="round" aria-label="Leave room" title="Leave room"><svg class="i"><use href="#i-close"/></svg></button>
+        <button id="end" class="pill glass end">End</button>
+        <button id="room-code" class="code-chip" aria-label="Invite people" title="Invite people"><svg class="i"><use href="#i-share"/></svg><span id="room-code-text"></span></button>
         <span id="presence" class="presence" data-presence="waiting"><i class="dot"></i><span id="presence-text"></span></span>
       </header>
       <div class="dock">
         <article id="link" class="link brackets" data-empty="true">
           <div class="link-empty">
-            <p class="link-title" data-copy="noLink"></p>
-            <p class="link-hint" data-copy="noLinkHint"></p>
+            <p class="link-title">No link yet</p>
+            <p class="link-hint">It appears here the moment the camera sees a QR code.</p>
           </div>
           <div class="link-full" aria-live="polite">
             <div class="link-head">
@@ -98,15 +97,15 @@
             <p id="link-host" class="link-host"></p>
             <p id="link-path" class="link-path"></p>
             <div class="link-actions">
-              <a id="link-open" class="action primary" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><span data-copy="open"></span><svg class="i"><use href="#i-open"/></svg></a>
-              <button id="link-copy" class="action square" data-label="copy"><svg class="i"><use href="#i-copy"/></svg></button>
+              <a id="link-open" class="action primary" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><span>Open link</span><svg class="i"><use href="#i-open"/></svg></a>
+              <button id="link-copy" class="action square" aria-label="Copy link" title="Copy link"><svg class="i"><use href="#i-copy"/></svg></button>
             </div>
           </div>
         </article>
         <div class="controls">
-          <button id="torch" class="round glass" aria-pressed="false" data-label="torch"><svg class="i"><use href="#i-torch"/></svg></button>
-          <div id="zoom" class="zoom glass" role="group" data-label="zoom"></div>
-          <button id="pause" class="round glass" aria-pressed="false" data-label="pause"><svg class="i"><use href="#i-pause"/></svg></button>
+          <button id="torch" class="round glass" aria-pressed="false" aria-label="Flashlight" title="Flashlight"><svg class="i"><use href="#i-torch"/></svg></button>
+          <div id="zoom" class="zoom glass" role="group" aria-label="Zoom" title="Zoom"></div>
+          <button id="pause" class="round glass" aria-pressed="false" aria-label="Pause camera" title="Pause camera"><svg class="i"><use href="#i-pause"/></svg></button>
         </div>
       </div>
     </section>
@@ -114,14 +113,14 @@
     <div id="invite" class="sheet" role="dialog" aria-modal="true" aria-labelledby="invite-title" hidden>
       <div class="sheet-scrim" data-close></div>
       <div class="sheet-panel">
-        <p id="invite-title" class="eyebrow" data-copy="inviteTitle"></p>
+        <p id="invite-title" class="eyebrow">Room code</p>
         <p id="invite-code" class="big-code brackets"></p>
-        <p class="sheet-hint" data-copy="inviteHint"></p>
+        <p class="sheet-hint">Anyone with this code can watch. No sign-up.</p>
         <div class="sheet-actions">
-          <button id="invite-share" class="action primary"><svg class="i"><use href="#i-share"/></svg><span data-copy="share"></span></button>
-          <button id="invite-copy" class="action"><svg class="i"><use href="#i-copy"/></svg><span data-copy="copyLink"></span></button>
+          <button id="invite-share" class="action primary"><svg class="i"><use href="#i-share"/></svg><span>Share invite</span></button>
+          <button id="invite-copy" class="action"><svg class="i"><use href="#i-copy"/></svg><span>Copy link</span></button>
         </div>
-        <button id="invite-done" class="pill" data-close data-copy="done"></button>
+        <button id="invite-done" class="pill" data-close>Done</button>
       </div>
     </div>
 

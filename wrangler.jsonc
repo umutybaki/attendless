@@ -15,6 +15,11 @@
     "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // Account-unique namespaces; high limits allow a campus behind one public IP.
+  "ratelimits": [
+    { "name": "API_RATE_LIMITER", "namespace_id": "10019781", "simple": { "limit": 1200, "period": 60 } },
+    { "name": "CREATE_RATE_LIMITER", "namespace_id": "10019782", "simple": { "limit": 60, "period": 60 } }
+  ],
   // Served at attendless.<account>.workers.dev; scripts/deploy.sh adds the custom
   // domain (DOMAIN_NAME) and www, whose DNS records and certificate Cloudflare manages.
   "workers_dev": true,

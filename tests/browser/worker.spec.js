@@ -100,3 +100,32 @@ test('a phone camera and a viewer connect through the Worker with real WebRTC', 
   await camera.getByRole('button', { name: 'Tap to end' }).click()
   await expect(viewer.locator('#note-title')).toHaveText('Room ended')
 })
+
+test('the real Worker caps viewers at ten and lets a reconnect reclaim its seat', async () => {
+  const { body: { code, token } } = await post('/api/rooms')
+  const host = connect(code, token)
+  const viewers = []
+  try {
+    await host.next('welcome')
+    const tokens = []
+    for (let i = 0; i < 10; i++) tokens.push((await post(`/api/rooms/${code}/join`)).body.token)
+    const extra = (await post(`/api/rooms/${code}/join`)).body.token
+    for (const token of tokens) {
+      const viewer = connect(code, token)
+      viewers.push(viewer)
+      await viewer.next('welcome')
+    }
+    expect((await post(`/api/rooms/${code}/join`)).status).toBe(409)
+    const refused = connect(code, extra)
+    viewers.push(refused)
+    expect(await refused.closed).toBe(4429)
+    const replacement = connect(code, tokens[0])
+    viewers.push(replacement)
+    expect((await replacement.next('welcome')).state.viewers).toBe(10)
+    expect(await viewers[0].closed).toBe(4409)
+  } finally {
+    host.say({ type: 'end' })
+    await host.closed
+    for (const viewer of viewers) viewer.ws.close()
+  }
+})

@@ -12,6 +12,7 @@ export async function iceServers(env, fetchImpl = fetch) {
   const request = (path) =>
     fetchImpl(`${api}/${encodeURIComponent(id)}/credentials/${path}`, {
       method: 'POST',
+      signal: AbortSignal.timeout(5000),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ttl: ICE_TTL_SECONDS }),
     })

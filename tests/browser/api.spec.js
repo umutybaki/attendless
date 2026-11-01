@@ -86,7 +86,7 @@ test('the camera creates a room, goes live over its socket and answers viewers',
   await expect(page.locator('#presence-text')).toHaveText('2 watching')
 
   const epoch = line.last('live').epoch
-  line.send({ type: 'offer', peer: 'p1', sdp: 'viewer-offer' })
+  line.send({ type: 'offer', peer: 'p1', epoch, sdp: 'viewer-offer' })
   await expect.poll(() => line.last('answer')).toEqual({ type: 'answer', peer: 'p1', epoch, sdp: 'host-answer' })
   expect(await page.evaluate(() => window.rtc.pcs[0].config.iceServers.at(-1).urls[0])).toBe('turn:turn.example:3478?transport=udp')
   // A small stream for viewers: the camera reads codes from its own full-resolution capture.
@@ -186,6 +186,111 @@ test('an unreachable server is reported, not mistaken for a wrong code', async (
   await expect(page.locator('#home-status')).toHaveText('Couldn’t reach Attendless. Check your connection and try again.')
   await page.getByRole('button', { name: 'New room' }).click()
   await expect(page.locator('#home-status')).toHaveText('Couldn’t reach Attendless. Check your connection and try again.')
+})
+
+test('a viewer makes a new offer after its signaling socket reconnects', async ({ page }) => {
+  const state = { live: true, paused: false, viewers: 1, epoch: 'e1' }
+  const { sockets } = await setup(page, {
+    post: () => [200, { token: 'v'.repeat(64) }],
+    socket: (line, message) => {
+      if (message.type === 'hello') line.send({ type: 'welcome', role: 'viewer', state, iceServers: turn })
+    },
+  })
+  await page.goto('/?room=482913')
+  await expect.poll(() => sockets[0]?.last('offer')).toBeTruthy()
+  sockets[0].ws.close({ code: 1006, reason: '' })
+  await expect.poll(() => sockets[1]?.last('offer'), { timeout: 10000 }).toEqual({ type: 'offer', epoch: 'e1', sdp: 'viewer-offer' })
+  expect(await page.evaluate(() => window.rtc.pcs.length)).toBe(2)
+})
+
+test('a disconnected media connection retries even when signaling stays open', async ({ page }) => {
+  const { sockets } = await setup(page, {
+    post: () => [200, { token: 'v'.repeat(64) }],
+    socket: (line, message) => {
+      if (message.type === 'hello') line.send({ type: 'welcome', role: 'viewer', state: { live: true, epoch: 'e1', viewers: 1 }, iceServers: turn })
+    },
+  })
+  await page.goto('/?room=482913')
+  await expect.poll(() => sockets[0]?.last('offer')).toBeTruthy()
+  await page.evaluate(() => {
+    const pc = window.rtc.pcs[0]
+    pc.connectionState = 'connected'
+    pc.onconnectionstatechange()
+    pc.connectionState = 'disconnected'
+    pc.onconnectionstatechange()
+  })
+  await expect.poll(() => page.evaluate(() => window.rtc.pcs.length), { timeout: 10000 }).toBe(2)
+})
+
+test('room capacity and request throttling have distinct messages', async ({ page }) => {
+  let status = 409
+  await setup(page, { post: () => [status, { error: status === 409 ? 'Room full' : 'Too many requests' }] })
+  await page.goto('/')
+  await typeCode(page, '482913')
+  await expect(page.locator('#home-status')).toHaveText('This room has 10 viewers. Try again when someone leaves.')
+  status = 429
+  await typeCode(page, '482913')
+  await expect(page.locator('#home-status')).toHaveText('Too many attempts. Wait a minute and try again.')
+})
+
+test('a new invite takes precedence over a saved room, and old language parameters stay English', async ({ page }) => {
+  const { calls } = await setup(page, {
+    post: () => [200, { token: 'v'.repeat(64) }],
+    socket: (line, message) => {
+      if (message.type === 'hello') line.send({ type: 'welcome', role: 'viewer', state: { live: false, viewers: 1 }, iceServers: turn })
+    },
+  })
+  await page.addInitScript(() => sessionStorage.setItem('attendless.room', JSON.stringify({ code: '111111', role: 'viewer', token: 'old-token' })))
+  await page.goto('/?room=482913&lang=tr')
+  await expect(page.locator('#room-code-text')).toHaveText('482 913')
+  await expect(page.locator('#note-title')).toHaveText('Waiting for the camera')
+  expect(calls).toEqual(['/api/rooms/482913/join'])
+  expect(new URL(page.url()).search).toBe('')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.locator('#language')).toHaveCount(0)
+})
+
+test('an expired camera restore returns home before asking for camera access', async ({ page }) => {
+  await setup(page, { socket: (line) => line.ws.close({ code: 4410, reason: 'Room ended' }) })
+  await page.addInitScript(() => sessionStorage.setItem('attendless.room', JSON.stringify({ code: '482913', role: 'camera', token: 'h'.repeat(64) })))
+  await page.goto('/?demo')
+  await expect(page.locator('#toast')).toHaveText('Room ended')
+  await expect(page.locator('#home')).toBeVisible()
+  expect(await page.evaluate(() => sessionStorage.getItem('attendless.room'))).toBeNull()
+  expect(await page.evaluate(() => document.getElementById('feed').srcObject)).toBeNull()
+})
+
+test('a camera permission result from a previous room cannot publish into the new room', async ({ page }) => {
+  let created = 0
+  const { sockets } = await setup(page, {
+    post: () => [200, { code: String(482913 + created++), token: 'h'.repeat(64) }],
+    socket: host(),
+  })
+  await page.addInitScript(() => {
+    window.cameras = []
+    navigator.mediaDevices.getUserMedia = () => new Promise((resolve) => {
+      const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 32 })
+      const stream = canvas.captureStream(1)
+      window.cameras.push({ stream, resolve: () => resolve(stream) })
+    })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'New room' }).click()
+  await expect.poll(() => page.evaluate(() => window.cameras.length)).toBe(1)
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
+  await page.getByRole('button', { name: 'End', exact: true }).click()
+  await page.getByRole('button', { name: 'Tap to end', exact: true }).click()
+  await page.getByRole('button', { name: 'New room' }).click()
+  await expect.poll(() => page.evaluate(() => window.cameras.length)).toBe(2)
+  await page.evaluate(() => window.cameras[0].resolve())
+  await expect.poll(() => page.evaluate(() => window.cameras[0].stream.getVideoTracks()[0].readyState)).toBe('ended')
+  await expect(page.locator('#note-title')).toHaveText('Starting camera…')
+  expect(sockets[1].last('live')).toBeUndefined()
+  await page.evaluate(() => window.cameras[1].resolve())
+  await expect.poll(() => sockets[1].last('live')?.epoch).toBeTruthy()
+  await page.evaluate(() => window.cameras[1].stream.getVideoTracks()[0].dispatchEvent(new Event('ended')))
+  await expect(page.locator('#note-title')).toHaveText('Camera stopped')
+  await expect.poll(() => sockets[1].last('live')).toEqual({ type: 'live', epoch: '', paused: false })
 })
 
 const aptabaseKey = 'A-EU-0000000000'

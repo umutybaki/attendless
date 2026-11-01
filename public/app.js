@@ -1,15 +1,57 @@
-import { copy } from './copy.js'
 import { isSharingPhone, safeQRLink } from './rtc.js'
 import { hostRoom, joinRoom } from './room.js'
 import { openCamera, scan } from './camera.js'
 import { demoRoom, crowd } from './demo.js'
 import { track } from './analytics.js'
 
+const messages = {
+  "idle": "Type the six digits you were given.",
+  "checking": "Looking for room {code}…",
+  "notFound": "No room with code {code}. Check the digits.",
+  "unreachable": "Couldn’t reach Attendless. Check your connection and try again.",
+  "full": "This room has 10 viewers. Try again when someone leaves.",
+  "limited": "Too many attempts. Wait a minute and try again.",
+  "creating": "Creating a room…",
+  "copied": "Copied",
+  "shareText": "Join my Attendless room: {code}",
+  "live": "Live",
+  "watching": "{n} watching",
+  "joined": "Someone joined",
+  "end": "End",
+  "endConfirm": "Tap to end",
+  "starting": "Starting camera…",
+  "aim": "Point at a QR code",
+  "notLink": "Not a web link",
+  "blocked": "Camera is blocked",
+  "blockedHint": "Allow camera access for this site, then try again.",
+  "interrupted": "Camera stopped",
+  "interruptedHint": "Start the camera again to resume sharing.",
+  "missing": "No camera found",
+  "missingHint": "Open this page on a phone to share its camera.",
+  "retry": "Try again",
+  "paused": "Paused",
+  "pausedHint": "Viewers see a paused screen. The last link stays.",
+  "resume": "Resume",
+  "pause": "Pause camera",
+  "waiting": "Waiting",
+  "waitingTitle": "Waiting for the camera",
+  "waitingHint": "The feed starts when the host turns their camera on.",
+  "viewerPaused": "Camera paused",
+  "viewerPausedHint": "The last link stays below.",
+  "offline": "Camera disconnected",
+  "offlineHint": "The feed comes back here when the host returns.",
+  "ended": "Room ended",
+  "endedHint": "The host closed room {code}.",
+  "home": "Back to start",
+  "latest": "Latest link",
+  "lastScan": "Sent to viewers",
+  "scannedAgo": "Scanned {t} ago",
+  "newLink": "New link"
+}
+
 const params = new URLSearchParams(location.search)
-const locale = params.get('lang') === 'tr' ? 'tr' : 'en'
 const demo = params.has('demo')
 const phone = isSharingPhone(navigator)
-const t = copy[locale]
 const $ = (id) => document.getElementById(id)
 const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key])
 const spaced = (code) => `${code.slice(0, 3)} ${code.slice(3)}`
@@ -22,7 +64,7 @@ const fresh = () => ({
   view: 'home', role: '', digits: '', entry: 'idle', code: '',
   live: false, paused: false, offline: false, ended: false, viewers: 0, extra: 0,
   starting: false, cameraError: '', link: null, torch: false, zoom: 1,
-  armed: false, invite: false, lock: '',
+  armed: false, invite: false, lock: '', full: false, limited: false,
 })
 const state = fresh()
 let room = null, camera = null, stops = [], wakeLock = null, autoPaused = false
@@ -46,21 +88,7 @@ const memory = {
   },
 }
 
-for (const element of document.querySelectorAll('[data-copy]')) element.textContent = t[element.dataset.copy]
-for (const element of document.querySelectorAll('[data-label]')) {
-  element.setAttribute('aria-label', t[element.dataset.label])
-  element.title = t[element.dataset.label]
-}
-document.documentElement.lang = locale
-document.querySelector('meta[name="description"]').content = t.description
 $('demo-badge').hidden = !demo
-const other = new URLSearchParams(params)
-other.delete('room')
-locale === 'tr' ? other.delete('lang') : other.set('lang', 'tr')
-$('language').href = `?${other}`
-$('language').textContent = locale === 'tr' ? 'EN' : 'TR'
-$('language').hreflang = $('language').lang = locale === 'tr' ? 'en' : 'tr'
-$('language').setAttribute('aria-label', locale === 'tr' ? 'English' : 'Türkçe')
 
 // ---------- Rendering ----------
 
@@ -84,10 +112,10 @@ function renderHome() {
   typed = -1
   $('code').dataset.state = state.entry
   $('home-status').textContent =
-    state.entry === 'checking' || state.entry === 'locked' ? fill(t.checking, { code: spaced(state.digits) })
-    : state.entry === 'creating' ? t.creating
-    : state.entry === 'error' ? (state.unreachable ? t.unreachable : fill(t.notFound, { code: spaced(state.digits) }))
-    : t.idle
+    state.entry === 'checking' || state.entry === 'locked' ? fill(messages.checking, { code: spaced(state.digits) })
+    : state.entry === 'creating' ? messages.creating
+    : state.entry === 'error' ? (state.full ? messages.full : state.limited ? messages.limited : state.unreachable ? messages.unreachable : fill(messages.notFound, { code: spaced(state.digits) }))
+    : messages.idle
   for (const key of document.querySelectorAll('.key')) key.disabled = busy()
 }
 
@@ -99,8 +127,8 @@ function renderRoom() {
   const presence = state.ended ? 'ended' : state.offline ? 'offline' : state.paused ? 'paused' : state.live ? 'live' : 'waiting'
   $('presence').dataset.presence = presence
   $('presence-text').textContent = isCamera
-    ? (state.live || state.paused ? fill(t.watching, { n: viewers }) : t.waiting)
-    : presence === 'live' ? `${t.live} · ${viewers}` : presence === 'paused' ? t.paused : t.waiting
+    ? (state.live || state.paused ? fill(messages.watching, { n: viewers }) : messages.waiting)
+    : presence === 'live' ? `${messages.live} · ${viewers}` : presence === 'paused' ? messages.paused : messages.waiting
 
   const note = stageNote()
   $('stage').dataset.note = note ? note.kind : ''
@@ -109,13 +137,13 @@ function renderRoom() {
     $('note-title').textContent = note.title
     $('note-hint').textContent = note.hint ?? ''
     $('note-action').hidden = !note.action
-    $('note-action').textContent = note.action ? t[note.action] : ''
+    $('note-action').textContent = note.action ? messages[note.action] : ''
     $('note-action').dataset.action = note.action ?? ''
   }
 
   const link = state.link
   $('link').dataset.empty = String(!link)
-  $('link-eyebrow').textContent = isCamera ? t.lastScan : t.latest
+  $('link-eyebrow').textContent = isCamera ? messages.lastScan : messages.latest
   if (link && $('link-open').href !== link.url) {
     const url = new URL(link.url)
     let path = url.pathname + url.search + url.hash
@@ -128,33 +156,33 @@ function renderRoom() {
   tickAge()
 
   $('end').dataset.armed = String(state.armed)
-  $('end').textContent = state.armed ? t.endConfirm : t.end
+  $('end').textContent = state.armed ? messages.endConfirm : messages.end
   $('torch').hidden = !camera?.torch
   $('torch').setAttribute('aria-pressed', String(state.torch))
   $('pause').setAttribute('aria-pressed', String(state.paused))
   $('pause').querySelector('use').setAttribute('href', state.paused ? '#i-play' : '#i-pause')
-  $('pause').setAttribute('aria-label', state.paused ? t.resume : t.pause)
+  $('pause').setAttribute('aria-label', state.paused ? messages.resume : messages.pause)
   $('pause').disabled = !state.live && !state.paused
   for (const button of $('zoom').children) button.setAttribute('aria-pressed', String(Number(button.dataset.zoom) === state.zoom))
 
   reticle.dataset.lock = state.lock
   $('reticle-label').textContent =
     state.lock === 'link' ? new URL(state.link.url).hostname.replace(/^www\./, '')
-    : state.lock === 'text' ? t.notLink
-    : state.live && !state.link ? t.aim : ''
+    : state.lock === 'text' ? messages.notLink
+    : state.live && !state.link ? messages.aim : ''
 }
 
 function stageNote() {
   if (state.role === 'camera') {
-    if (state.cameraError) return { kind: 'error', title: t[state.cameraError], hint: t[`${state.cameraError}Hint`], action: 'retry' }
-    if (state.starting) return { kind: 'starting', title: t.starting }
-    if (state.paused) return { kind: 'paused', title: t.paused, hint: t.pausedHint, action: 'resume' }
+    if (state.cameraError) return { kind: 'error', title: messages[state.cameraError], hint: messages[`${state.cameraError}Hint`], action: 'retry' }
+    if (state.starting) return { kind: 'starting', title: messages.starting }
+    if (state.paused) return { kind: 'paused', title: messages.paused, hint: messages.pausedHint, action: 'resume' }
     return null
   }
-  if (state.ended) return { kind: 'ended', title: t.ended, hint: fill(t.endedHint, { code: spaced(state.code) }), action: 'home' }
-  if (state.offline) return { kind: 'offline', title: t.offline, hint: t.offlineHint }
-  if (state.paused) return { kind: 'paused', title: t.viewerPaused, hint: t.viewerPausedHint }
-  if (!state.live) return { kind: 'waiting', title: t.waitingTitle, hint: t.waitingHint }
+  if (state.ended) return { kind: 'ended', title: messages.ended, hint: fill(messages.endedHint, { code: spaced(state.code) }), action: 'home' }
+  if (state.offline) return { kind: 'offline', title: messages.offline, hint: messages.offlineHint }
+  if (state.paused) return { kind: 'paused', title: messages.viewerPaused, hint: messages.viewerPausedHint }
+  if (!state.live) return { kind: 'waiting', title: messages.waitingTitle, hint: messages.waitingHint }
   return null
 }
 
@@ -165,7 +193,7 @@ function tickAge() {
   const clock = seconds >= 3600 ? '59:59+' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
   $('link-age').textContent = clock
   $('link-age').dateTime = `PT${seconds}S`
-  $('link-age').title = fill(t.scannedAgo, { t: clock })
+  $('link-age').title = fill(messages.scannedAgo, { t: clock })
   $('link').classList.toggle('fresh', seconds < 15)
 }
 setInterval(tickAge, 1000)
@@ -199,7 +227,7 @@ async function copyText(text) {
     document.execCommand('copy')
     area.remove()
   }
-  toast(t.copied)
+  toast(messages.copied)
 }
 
 // ---------- Home: typing a code ----------
@@ -224,29 +252,31 @@ function erase(all = false) {
 }
 
 async function join(code, token, via) {
-  Object.assign(state, { entry: 'checking', digits: code, unreachable: false })
+  Object.assign(state, { entry: 'checking', digits: code, unreachable: false, full: false, limited: false })
   render()
   let next
   try {
     next = (await joinRoom(code, token)) ?? (demo ? await demoRoom(code) : null)
-  } catch {
+  } catch (error) {
     next = demo ? await demoRoom(code) : null
-    state.unreachable = !demo
+    state.full = error.status === 409
+    state.limited = error.status === 429
+    state.unreachable = !demo && !state.full
   }
   if (state.view !== 'home' || state.digits !== code) return next?.leave()
   if (!next) {
     state.entry = 'error'
-    if (!state.unreachable) memory.set(null)
+    if (!state.unreachable && !state.full) memory.set(null)
     render()
     buzz([30, 40, 30])
     // Typos repeat; the first failure per visit is enough to see the problem.
-    if (!joinFailed) track('join_failed', { via, reason: state.unreachable ? 'unreachable' : 'not_found' })
+    if (!joinFailed) track('join_failed', { via, reason: state.full ? 'full' : state.unreachable ? 'unreachable' : 'not_found' })
     joinFailed = true
     return
   }
   reported = new Set()
   // A reload rejoins the same room: not a new join.
-  if (via !== 'reload') track('room_joined', { via, lang: locale })
+  if (via !== 'reload') track('room_joined', { via, lang: 'en' })
   state.entry = 'locked'
   render()
   await wait(360)
@@ -274,8 +304,8 @@ function enterViewer(next) {
     memory.set(null)
     render()
   })
-  room.start()
   memory.set({ code: next.code, role: 'viewer', token: next.token })
+  room.start()
   render()
 }
 
@@ -289,30 +319,37 @@ function receive(link, announce) {
   if (!announce) return
   flash($('link'))
   buzz(40)
-  if (document.hidden) document.title = `● ${t.newLink} · ${title}`
+  if (document.hidden) document.title = `● ${messages.newLink} · ${title}`
 }
 
 // ---------- Camera ----------
 
 async function enterCamera(saved) {
-  if (busy()) return
-  Object.assign(state, { entry: 'creating', digits: '', unreachable: false })
+  if (busy() || state.view !== 'home') return
+  Object.assign(state, { entry: 'creating', digits: '', unreachable: false, full: false, limited: false })
   render()
   try {
     room = await hostRoom(saved)
-  } catch {
-    Object.assign(state, { entry: 'error', unreachable: true })
+  } catch (error) {
+    if (error.status === 410) {
+      memory.set(null)
+      Object.assign(state, fresh())
+      render()
+      return toast(messages.ended)
+    }
+    Object.assign(state, { entry: 'error', unreachable: true, limited: error.status === 429 })
     return render()
   }
-  Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !saved })
-  stats = { created: saved?.created ?? Date.now(), started: 0, links: 0, peak: 0, firstLink: -1 }
+  const viewers = typeof room.viewers === 'number' ? room.viewers : 0
+  Object.assign(state, fresh(), { view: 'room', role: 'camera', code: room.code, invite: !saved, viewers })
+  stats = { created: saved?.created ?? Date.now(), started: 0, links: 0, peak: viewers, firstLink: -1 }
   reported = new Set()
   memory.set({ code: room.code, role: 'camera', token: room.token, created: stats.created })
-  if (!saved) track('room_created', { lang: locale })
+  if (!saved) track('room_created', { lang: 'en' })
   room.addEventListener('viewers', (event) => setViewers(event.detail, state.extra))
   room.addEventListener('ended', () => {
     exit('ended')
-    toast(t.ended)
+    toast(messages.ended)
   })
   if (demo) stops.push(crowd((n) => setViewers(state.viewers, n)))
   $('invite-code').textContent = spaced(room.code)
@@ -327,23 +364,27 @@ function setViewers(real, extra) {
   if (stats) stats.peak = Math.max(stats.peak, real + extra)
   if (real + extra > before) {
     flash($('presence'), 'bump', 400)
-    toast(t.joined)
+    toast(messages.joined)
   }
   render()
 }
 
 async function startCamera() {
+  if (state.starting || state.role !== 'camera') return
+  const owner = room
   Object.assign(state, { starting: true, cameraError: '' })
   render()
   let opened
   try {
     opened = await openCamera({ demo })
   } catch (e) {
+    if (room !== owner) return
     Object.assign(state, { starting: false, cameraError: e.kind ?? 'blocked' })
     once('camera_failed', { reason: state.cameraError })
     return render()
   }
-  if (state.role !== 'camera') return opened.stop()
+  if (state.role !== 'camera' || room !== owner) return opened.stop()
+  camera?.stop()
   camera = opened
   stats.started ||= Date.now()
   show(camera.stream)
@@ -354,7 +395,16 @@ async function startCamera() {
   }))
   Object.assign(state, { starting: false, live: true, paused: false, zoom: 1, torch: false })
   room.publish(camera.stream, video)
-  stops.push(scan(video, seen))
+  const stopScan = scan(video, seen)
+  stops.push(stopScan)
+  camera.track.addEventListener('ended', () => {
+    if (room !== owner || camera !== opened) return
+    stopScan()
+    room.unpublish()
+    Object.assign(state, { live: false, paused: false, cameraError: 'interrupted', lock: '' })
+    void wakeLock?.release().catch(() => {})
+    render()
+  }, { once: true })
   void keepAwake()
   render()
   requestAnimationFrame(rest)
@@ -429,8 +479,13 @@ function pause(paused) {
 }
 
 async function keepAwake() {
-  if (state.role !== 'camera' || document.hidden) return
-  try { wakeLock = await navigator.wakeLock?.request('screen') } catch { /* The screen may sleep. */ }
+  if (state.role !== 'camera' || !state.live || state.paused || document.hidden || (wakeLock && !wakeLock.released)) return
+  const owner = room
+  try {
+    const lock = await navigator.wakeLock?.request('screen')
+    if (room !== owner || state.paused || !state.live || document.hidden) await lock?.release()
+    else wakeLock = lock
+  } catch { /* The screen may sleep. */ }
 }
 
 function arm() {
@@ -453,7 +508,6 @@ function show(stream) {
 function inviteUrl() {
   const url = new URL(location.pathname, location.origin)
   url.searchParams.set('room', state.code)
-  if (locale === 'tr') url.searchParams.set('lang', 'tr')
   if (demo) url.searchParams.set('demo', '')
   return url.href
 }
@@ -485,6 +539,7 @@ function exit(how = 'leave') {
   void wakeLock?.release().catch(() => {})
   video.srcObject = null
   room = camera = wakeLock = stats = null
+  autoPaused = false
   stops = []
   clearTimeout(armTimer)
   memory.set(null)
@@ -535,7 +590,7 @@ $('invite-copy').addEventListener('click', () => {
   copyText(inviteUrl())
 })
 $('invite-share').addEventListener('click', async () => {
-  const data = { title, text: fill(t.shareText, { code: spaced(state.code) }), url: inviteUrl() }
+  const data = { title, text: fill(messages.shareText, { code: spaced(state.code) }), url: inviteUrl() }
   const share = Boolean(navigator.canShare?.(data))
   once('invite_shared', { method: share ? 'share' : 'copy', role: state.role })
   if (share) return navigator.share(data).catch(() => {})
@@ -558,7 +613,7 @@ document.addEventListener('keydown', (event) => {
 })
 document.addEventListener('paste', (event) => {
   const match = (event.clipboardData?.getData('text') ?? '').match(/(\d{3})\s?(\d{3})/)
-  if (state.view !== 'home' || !match || state.entry === 'checking') return
+  if (state.view !== 'home' || !match || busy()) return
   event.preventDefault()
   Object.assign(state, { entry: 'idle', digits: '' })
   for (const digit of match[1] + match[2]) press(digit)
@@ -593,13 +648,15 @@ window.addEventListener('pageshow', (event) => { if (event.persisted) location.r
 
 const saved = memory.get()
 const invited = (params.get('room') ?? '').replace(/\D/g, '')
-if (params.has('room')) {
+if (params.has('room') || params.has('lang')) {
   params.delete('room')
+  params.delete('lang')
   const query = params.toString().replace(/(^|&)demo=(?=&|$)/, '$1demo')
   history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}`)
 }
 const restoring = /^\d{6}$/.test(saved?.code ?? '') && ['camera', 'viewer'].includes(saved.role)
-if (restoring && saved.role === 'camera') void enterCamera(saved)
+if (invited.length === 6 && (!restoring || saved.code !== invited)) void join(invited, '', 'invite')
+else if (restoring && saved.role === 'camera') void enterCamera(saved)
 else if (restoring) void join(saved.code, saved.token, 'reload')
 else if (invited.length === 6) void join(invited, '', 'invite')
 else render()
