@@ -15,8 +15,8 @@ jobs:
     env:
       WRANGLER_SEND_METRICS: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -27,7 +27,7 @@ jobs:
       - run: npm run test:e2e
       - name: Check that the Worker bundles and its configuration is valid
         run: ATTENDLESS_API_URL=/api npm run build && npx wrangler deploy --dry-run --outdir .build/worker
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-results
@@ -49,8 +49,8 @@ jobs:
       ATTENDLESS_APTABASE_KEY: ${{ vars.APTABASE_APP_KEY }}
       WRANGLER_SEND_METRICS: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
