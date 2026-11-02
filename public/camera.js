@@ -63,23 +63,58 @@ async function demoCamera() {
   }
 }
 
-// Reads QR codes from full-resolution frames up to 10 times a second.
+// Decode original camera frames off the UI thread, with at most one in flight.
 // Reports { url, location, width, height } (url is '' for non-web codes) or null.
 export function scan(video, report) {
-  const canvas = document.createElement('canvas')
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  let last = -1
-  const timer = setInterval(() => {
-    if (!window.jsQR || video.readyState < 2 || video.currentTime === last) return
-    last = video.currentTime
-    const width = (canvas.width = video.videoWidth), height = (canvas.height = video.videoHeight)
+  const worker = new Worker(new URL('./qr-worker.js', import.meta.url))
+  let ready = false, busy = false, stopped = false, bitmaps = false, last = -1
+  let canvas, context
+  worker.onmessage = ({ data }) => {
+    if (stopped) return
+    if (data.type === 'ready') {
+      ready = true
+      bitmaps = data.bitmaps && typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function'
+    } else if (data.type === 'result') {
+      busy = false
+      if (data.error) { bitmaps = false; return }
+      const qr = data.qr
+      report(qr ? { url: safeQRLink(qr.data), location: qr.location, width: data.width, height: data.height } : null)
+    }
+  }
+  const timer = setInterval(async () => {
+    if (!ready || busy || stopped || video.readyState < 2 || video.currentTime === last) return
+    const width = video.videoWidth, height = video.videoHeight
     if (!width || !height) return
-    context.drawImage(video, 0, 0)
-    const pixels = context.getImageData(0, 0, width, height)
-    const qr = window.jsQR(pixels.data, width, height, { inversionAttempts: 'dontInvert' })
-    report(qr ? { url: safeQRLink(qr.data), location: qr.location, width, height } : null)
+    last = video.currentTime
+    busy = true
+    let bitmap
+    try {
+      if (bitmaps) {
+        // Transfer the original frame; drawing and pixel readback also happen
+        // in the worker on browsers with OffscreenCanvas support.
+        bitmap = await createImageBitmap(video)
+        if (stopped) { bitmap.close(); return }
+        worker.postMessage({ bitmap, width, height }, [bitmap])
+      } else {
+        // Older browsers still decode in the worker, using transferred pixels.
+        canvas ??= document.createElement('canvas')
+        context ??= canvas.getContext('2d', { willReadFrequently: true })
+        if (canvas.width !== width || canvas.height !== height) Object.assign(canvas, { width, height })
+        context.drawImage(video, 0, 0)
+        const pixels = context.getImageData(0, 0, width, height).data
+        worker.postMessage({ pixels, width, height }, [pixels.buffer])
+      }
+    } catch {
+      bitmap?.close()
+      busy = false
+      bitmaps = false
+    }
   }, 100)
-  return () => clearInterval(timer)
+  return () => {
+    stopped = true
+    clearInterval(timer)
+    worker.terminate()
+  }
 }
 
 // Samples the feed into small JPEG frames for the same-browser room transport.

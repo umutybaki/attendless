@@ -1,8 +1,10 @@
 import { test, expect } from './fixtures.js'
 
-test('the scanner reads original camera pixels when the viewer preview loses the QR detail', async ({ page }) => {
+for (const fallback of [false, true]) test(`the scanner reads original camera pixels when the viewer preview loses the QR detail (${fallback ? 'pixel fallback' : 'bitmap worker'})`, async ({ page }) => {
+  if (fallback) await page.addInitScript(() => { window.OffscreenCanvas = undefined })
   await page.goto('/')
   await page.addScriptTag({ url: '/vendor/qrcode.js' })
+  await page.addScriptTag({ url: '/vendor/jsQR.js' })
   const result = await page.evaluate(async () => {
     const { scan, relay } = await import('/camera.js')
     const url = 'https://forms.example.com/r/FULLRESOLUTION123456789'
@@ -44,4 +46,49 @@ test('the scanner reads original camera pixels when the viewer preview loses the
     url: 'https://forms.example.com/r/FULLRESOLUTION123456789',
     width: 1920, height: 1080, previewWidth: 540, previewQR: null,
   })
+})
+
+test('zoom and end stay responsive during a slow decode, with no scan backlog or worker left running', async ({ page }) => {
+  // Simulate a slow phone decoding a large frame. The diagnostic message lets
+  // the test interact while decoding is still running, rather than between scans.
+  await page.route('**/vendor/jsQR.js', (route) => route.fulfill({
+    contentType: 'text/javascript',
+    body: `self.jsQR = () => {
+      self.postMessage({ type: 'decoding' });
+      const until = performance.now() + 2000;
+      while (performance.now() < until) {}
+      return null;
+    };`,
+  }))
+  await page.addInitScript(() => {
+    window.scanner = { decoding: 0, completed: 0, frames: 0, terminated: 0 }
+    window.Worker = class extends Worker {
+      constructor(...args) {
+        super(...args)
+        this.addEventListener('message', ({ data }) => {
+          if (data.type === 'decoding') window.scanner.decoding++
+          if (data.type === 'result') window.scanner.completed++
+        })
+      }
+      postMessage(...args) { window.scanner.frames++; return super.postMessage(...args) }
+      terminate() { window.scanner.terminated++; return super.terminate() }
+    }
+  })
+  await page.goto('/?demo')
+  await page.getByRole('button', { name: 'New room' }).click()
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.scanner.decoding)).toBe(1)
+  for (const zoom of [2, 3, 1]) {
+    const button = page.locator(`[data-zoom="${zoom}"]`)
+    await button.click()
+    await expect(button).toHaveAttribute('aria-pressed', 'true')
+  }
+  await page.getByRole('button', { name: 'End', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Tap to end', exact: true })).toBeVisible()
+  // All of the controls responded before the deliberately slow scan finished,
+  // and the 100 ms sampling loop did not send it any extra frames.
+  expect(await page.evaluate(() => window.scanner)).toEqual({ decoding: 1, completed: 0, frames: 1, terminated: 0 })
+  await page.getByRole('button', { name: 'Tap to end', exact: true }).click()
+  await expect(page.locator('#home')).toBeVisible()
+  expect(await page.evaluate(() => window.scanner.terminated)).toBe(1)
 })
