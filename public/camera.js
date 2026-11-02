@@ -14,8 +14,9 @@ export async function openCamera({ demo = false } = {}) {
       audio: false,
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+        resizeMode: { ideal: 'none' },
         frameRate: { ideal: 15, max: 30 },
       },
     })
@@ -24,14 +25,27 @@ export async function openCamera({ demo = false } = {}) {
   }
   const track = stream.getVideoTracks()[0]
   const caps = track.getCapabilities?.() ?? {}
+  // Capture as much detail as this camera supports; viewer limits belong to
+  // the encoder, never the source that the QR scanner reads.
+  if (caps.width?.max && caps.height?.max) {
+    try {
+      await track.applyConstraints({
+        ...track.getConstraints(),
+        width: { ideal: caps.width.max },
+        height: { ideal: caps.height.max },
+      })
+    } catch { /* Keep the working capture if the browser cannot upgrade it. */ }
+  }
+  // applyConstraints replaces previous constraints, including the resolution.
+  const adjust = (settings) => track.applyConstraints({ ...track.getConstraints(), advanced: [settings] })
   const zooms = caps.zoom ? [1, 2, 3].filter((zoom) => zoom >= caps.zoom.min && zoom <= caps.zoom.max) : []
   return {
     stream,
     track,
     torch: Boolean(caps.torch),
     zooms: zooms.length > 1 ? zooms : [],
-    setTorch: (on) => track.applyConstraints({ advanced: [{ torch: on }] }),
-    setZoom: (zoom) => track.applyConstraints({ advanced: [{ zoom }] }),
+    setTorch: (on) => adjust({ torch: on }),
+    setZoom: (zoom) => adjust({ zoom }),
     stop: () => stream.getTracks().forEach((t) => t.stop()),
   }
 }

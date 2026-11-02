@@ -190,7 +190,11 @@ class ApiHost extends Room {
       for (const track of this.stream.getVideoTracks()) {
         const sender = pc.addTrack(track, this.stream)
         const params = sender.getParameters()
-        params.encodings = (params.encodings?.length ? params.encodings : [{}]).map((encoding) => ({ ...encoding, ...VIDEO }))
+        const { width = 0, height = 0 } = track.getSettings()
+        // Only shrink the outgoing encoding. The local video and scanner keep
+        // the original camera pixels, even when viewers need a smaller feed.
+        const scaleResolutionDownBy = Math.max(1, Math.max(width, height) / 960)
+        params.encodings = (params.encodings?.length ? params.encodings : [{}]).map((encoding) => ({ ...encoding, ...VIDEO, scaleResolutionDownBy }))
         params.degradationPreference = 'maintain-resolution'
         await sender.setParameters(params)
       }

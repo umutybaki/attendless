@@ -90,7 +90,7 @@ test('the camera creates a room, goes live over its socket and answers viewers',
   await expect.poll(() => line.last('answer')).toEqual({ type: 'answer', peer: 'p1', epoch, sdp: 'host-answer' })
   expect(await page.evaluate(() => window.rtc.pcs[0].config.iceServers.at(-1).urls[0])).toBe('turn:turn.example:3478?transport=udp')
   // A small stream for viewers: the camera reads codes from its own full-resolution capture.
-  expect(await page.evaluate(() => window.rtc.senders[0])).toMatchObject({ encodings: [{ maxBitrate: 400000, maxFramerate: 15 }], degradationPreference: 'maintain-resolution' })
+  expect(await page.evaluate(() => window.rtc.senders[0])).toMatchObject({ encodings: [{ maxBitrate: 400000, maxFramerate: 15, scaleResolutionDownBy: 1280 / 960 }], degradationPreference: 'maintain-resolution' })
   await expect.poll(() => page.evaluate(() => window.rtc.outgoing.at(-1)?.url), { timeout: 15000 }).toMatch(/^https:\/\/forms\.example\.com\/r\/[A-Z0-9]+$/)
 
   await page.getByRole('button', { name: 'Pause camera' }).click()

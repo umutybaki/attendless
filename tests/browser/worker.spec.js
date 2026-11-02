@@ -90,6 +90,16 @@ test('a phone camera and a viewer connect through the Worker with real WebRTC', 
   await expect(viewer.locator('#presence')).toHaveAttribute('data-presence', 'live')
   await expect.poll(() => viewer.evaluate(() => document.getElementById('feed').videoWidth), { timeout: 30000 }).toBeGreaterThan(0)
   await expect(viewer.locator('#link-open')).toHaveAttribute('href', /^https:\/\/forms\.example\.com\/r\/[A-Z0-9]+$/, { timeout: 30000 })
+  // Real WebRTC sends a smaller portrait preview while the scanner's local
+  // source keeps every original pixel, even with a viewer connected.
+  expect(await camera.evaluate(() => {
+    const video = document.getElementById('feed')
+    return [video.videoWidth, video.videoHeight]
+  })).toEqual([720, 1280])
+  expect(await viewer.evaluate(() => {
+    const video = document.getElementById('feed')
+    return Math.max(video.videoWidth, video.videoHeight)
+  })).toBeLessThanOrEqual(960)
 
   await camera.getByRole('button', { name: 'Pause camera' }).click()
   await expect(viewer.locator('#note-title')).toHaveText('Camera paused')
