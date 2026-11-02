@@ -34,7 +34,7 @@ test('camera requests native detail and retains maximum capture settings through
     audio: false,
     video: {
       facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 },
-      resizeMode: { ideal: 'none' }, frameRate: { ideal: 15, max: 30 },
+      resizeMode: { ideal: 'none' }, frameRate: { ideal: 30, max: 30 },
     },
   })
   for (const adjust of [() => camera.setTorch(true), () => camera.setZoom(2), () => camera.setTorch(false)]) {
@@ -42,7 +42,7 @@ test('camera requests native detail and retains maximum capture settings through
     assert.deepEqual(track.getConstraints().width, { ideal: 4096 })
     assert.deepEqual(track.getConstraints().height, { ideal: 3072 })
     assert.deepEqual(track.getConstraints().resizeMode, { ideal: 'none' })
-    assert.deepEqual(track.getConstraints().frameRate, { ideal: 15, max: 30 })
+    assert.deepEqual(track.getConstraints().frameRate, { ideal: 30, max: 30 })
   }
   camera.stop()
   assert.equal(track.stop.mock.callCount(), 1)
