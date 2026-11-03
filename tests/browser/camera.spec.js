@@ -50,11 +50,13 @@ test('the scanner reads original camera pixels when the viewer preview loses the
 test('zoom and end stay responsive during a slow decode, with no scan backlog or worker left running', async ({ page }) => {
   // Simulate a slow phone decoding a large frame. The diagnostic message lets
   // the test interact while decoding is still running, rather than between scans.
+  // The decode outlasts every step on a slow CI browser; ending the room stops
+  // the worker, so the test never waits for it.
   await page.route('**/vendor/jsQR.js', (route) => route.fulfill({
     contentType: 'text/javascript',
     body: `self.jsQR = () => {
       self.postMessage({ type: 'decoding' });
-      const until = performance.now() + 2000;
+      const until = performance.now() + 20000;
       while (performance.now() < until) {}
       return null;
     };`,
