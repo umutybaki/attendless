@@ -88,10 +88,12 @@ export function scan(video, report) {
   // scan region is read back.
   const canvas = document.createElement('canvas')
   const context = canvas.getContext('2d')
-  let ready = false, stopped = false, pending = null, pass = 0, last = -1
+  // A still frame is read at most once each way: tried has one bit per kind of pass.
+  let ready = false, stopped = false, pending = null, pass = 0, last = -1, tried = 0
   worker.onmessage = ({ data }) => {
     if (stopped) return
     if (data.type === 'ready') { ready = true; return }
+    if (data.type !== 'result') return
     const { region, width, height } = pending
     pending = null
     const qr = data.qr
@@ -102,10 +104,13 @@ export function scan(video, report) {
     report({ url: safeQRLink(qr.data), location, width, height })
   }
   const timer = setInterval(() => {
-    if (!ready || pending || video.readyState < 2 || video.currentTime === last) return
+    if (!ready || pending || video.readyState < 2) return
     const width = video.videoWidth, height = video.videoHeight
     if (!width || !height) return
-    last = video.currentTime
+    if (video.currentTime !== last) { last = video.currentTime; tried = 0 }
+    const kind = 1 << (pass % 2)
+    if (tried & kind) return
+    tried |= kind
     const region = scanRegion(width, height, pass)
     if (canvas.width !== region.w || canvas.height !== region.h) Object.assign(canvas, { width: region.w, height: region.h })
     context.imageSmoothingQuality = 'high'

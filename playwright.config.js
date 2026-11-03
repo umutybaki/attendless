@@ -14,6 +14,8 @@ export default defineConfig({
   projects: [
     // No API: room.spec.js uses the same-browser transport; api.spec.js fakes the server.
     { name: 'chromium', testIgnore: /worker\.spec\.js/, use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:3000' } },
+    // Safari's engine: the camera and QR scanner must work on every iPhone.
+    { name: 'webkit', testMatch: /camera\.spec\.js/, use: { ...devices['Desktop Safari'], baseURL: 'http://127.0.0.1:3000' } },
     // The real Worker and Durable Object in local workerd, with real WebRTC between pages.
     {
       name: 'worker',
