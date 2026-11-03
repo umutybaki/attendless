@@ -22,7 +22,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
       # Mocked UI tests, plus the real Worker and Durable Object in local workerd.
       - run: npm run test:e2e
       - name: Check that the Worker bundles and its configuration is valid
