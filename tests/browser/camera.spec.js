@@ -12,18 +12,25 @@ test('the scanner reads original camera pixels when the viewer preview loses the
     qr.make()
     const source = Object.assign(document.createElement('canvas'), { width: 1920, height: 1080 })
     const context = source.getContext('2d')
-    context.fillStyle = '#fff'
-    context.fillRect(0, 0, source.width, source.height)
-    context.fillStyle = '#000'
-    for (let row = 0; row < qr.getModuleCount(); row++)
-      for (let col = 0; col < qr.getModuleCount(); col++)
-        if (qr.isDark(row, col)) context.fillRect(900 + col * 2, 500 + row * 2, 2, 2)
+    const paint = () => {
+      context.fillStyle = '#fff'
+      context.fillRect(0, 0, source.width, source.height)
+      context.fillStyle = '#000'
+      for (let row = 0; row < qr.getModuleCount(); row++)
+        for (let col = 0; col < qr.getModuleCount(); col++)
+          if (qr.isDark(row, col)) context.fillRect(900 + col * 2, 500 + row * 2, 2, 2)
+    }
+    paint()
+    // WebKit captures a canvas frame only when the canvas changes after the
+    // stream starts, so a canvas painted once may never reach the video.
+    // Repaint like the demo camera does.
+    const painting = setInterval(paint, 100)
     const video = Object.assign(document.createElement('video'), { muted: true, playsInline: true, srcObject: source.captureStream(10) })
     video.style.width = '200px'
     document.body.append(video)
-    await video.play()
     let stopScan, stopRelay
     try {
+      await video.play()
       const scanned = new Promise((resolve) => { stopScan = scan(video, (result) => { if (result) resolve(result) }) })
       const preview = new Promise((resolve) => { stopRelay = relay(video, resolve) })
       const [full, blob] = await Promise.all([scanned, preview])
@@ -37,6 +44,7 @@ test('the scanner reads original camera pixels when the viewer preview loses the
     } finally {
       stopScan?.()
       stopRelay?.()
+      clearInterval(painting)
       video.srcObject.getTracks().forEach((track) => track.stop())
       video.remove()
     }
