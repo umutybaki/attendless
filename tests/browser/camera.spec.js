@@ -1,7 +1,6 @@
 import { test, expect } from './fixtures.js'
 
-for (const fallback of [false, true]) test(`the scanner reads original camera pixels when the viewer preview loses the QR detail (${fallback ? 'pixel fallback' : 'bitmap worker'})`, async ({ page }) => {
-  if (fallback) await page.addInitScript(() => { window.OffscreenCanvas = undefined })
+test('the scanner reads original camera pixels when the viewer preview loses the QR detail', async ({ page }) => {
   await page.goto('/')
   await page.addScriptTag({ url: '/vendor/qrcode.js' })
   await page.addScriptTag({ url: '/vendor/jsQR.js' })

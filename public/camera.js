@@ -63,52 +63,56 @@ async function demoCamera() {
   }
 }
 
-// Decode original camera frames off the UI thread, with at most one in flight.
-// Reports { url, location, width, height } (url is '' for non-web codes) or null.
+// jsQR slows down sharply with frame size, and phone sensor noise at 4K or
+// 12 MP makes it search for many seconds and still miss. Each scan therefore
+// reads at most SCAN_EDGE pixels along its long edge.
+const SCAN_EDGE = 1280
+
+// The part of the frame a scan reads: even passes take the whole view, scaled
+// down (which also averages away noise); odd passes take the original pixels
+// at the centre, for small or distant codes. Small frames are always read whole.
+export function scanRegion(width, height, pass) {
+  const scale = Math.min(1, SCAN_EDGE / Math.max(width, height))
+  const w = Math.round(width * scale), h = Math.round(height * scale)
+  if (pass % 2 === 0 || scale === 1) return { sx: 0, sy: 0, sw: width, sh: height, w, h }
+  return { sx: Math.round((width - w) / 2), sy: Math.round((height - h) / 2), sw: w, sh: h, w, h }
+}
+
+// Decodes camera frames off the UI thread, with at most one in flight.
+// Reports { url, location, width, height } (url is '' for non-web codes) or null;
+// location is in the coordinates of the full width × height frame.
 export function scan(video, report) {
   const worker = new Worker(new URL('./qr-worker.js', import.meta.url))
-  let ready = false, busy = false, stopped = false, bitmaps = false, last = -1
-  let canvas, context
+  // A plain 2D canvas crops and scales the frame on every browser, Safari
+  // included. It stays GPU-backed (no willReadFrequently), so only the small
+  // scan region is read back.
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  let ready = false, stopped = false, pending = null, pass = 0, last = -1
   worker.onmessage = ({ data }) => {
     if (stopped) return
-    if (data.type === 'ready') {
-      ready = true
-      bitmaps = data.bitmaps && typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function'
-    } else if (data.type === 'result') {
-      busy = false
-      if (data.error) { bitmaps = false; return }
-      const qr = data.qr
-      report(qr ? { url: safeQRLink(qr.data), location: qr.location, width: data.width, height: data.height } : null)
-    }
+    if (data.type === 'ready') { ready = true; return }
+    const { region, width, height } = pending
+    pending = null
+    const qr = data.qr
+    // Keep reading the same way while it finds the code; alternate after a miss.
+    if (!qr) { pass++; return report(null) }
+    const x = region.sw / region.w, y = region.sh / region.h
+    const location = Object.fromEntries(Object.entries(qr.location).map(([name, p]) => [name, { x: region.sx + p.x * x, y: region.sy + p.y * y }]))
+    report({ url: safeQRLink(qr.data), location, width, height })
   }
-  const timer = setInterval(async () => {
-    if (!ready || busy || stopped || video.readyState < 2 || video.currentTime === last) return
+  const timer = setInterval(() => {
+    if (!ready || pending || video.readyState < 2 || video.currentTime === last) return
     const width = video.videoWidth, height = video.videoHeight
     if (!width || !height) return
     last = video.currentTime
-    busy = true
-    let bitmap
-    try {
-      if (bitmaps) {
-        // Transfer the original frame; drawing and pixel readback also happen
-        // in the worker on browsers with OffscreenCanvas support.
-        bitmap = await createImageBitmap(video)
-        if (stopped) { bitmap.close(); return }
-        worker.postMessage({ bitmap, width, height }, [bitmap])
-      } else {
-        // Older browsers still decode in the worker, using transferred pixels.
-        canvas ??= document.createElement('canvas')
-        context ??= canvas.getContext('2d', { willReadFrequently: true })
-        if (canvas.width !== width || canvas.height !== height) Object.assign(canvas, { width, height })
-        context.drawImage(video, 0, 0)
-        const pixels = context.getImageData(0, 0, width, height).data
-        worker.postMessage({ pixels, width, height }, [pixels.buffer])
-      }
-    } catch {
-      bitmap?.close()
-      busy = false
-      bitmaps = false
-    }
+    const region = scanRegion(width, height, pass)
+    if (canvas.width !== region.w || canvas.height !== region.h) Object.assign(canvas, { width: region.w, height: region.h })
+    context.imageSmoothingQuality = 'high'
+    context.drawImage(video, region.sx, region.sy, region.sw, region.sh, 0, 0, region.w, region.h)
+    const pixels = context.getImageData(0, 0, region.w, region.h).data
+    pending = { region, width, height }
+    worker.postMessage({ pixels, width: region.w, height: region.h }, [pixels.buffer])
   }, 100)
   return () => {
     stopped = true

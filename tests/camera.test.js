@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { openCamera } from '../public/camera.js'
+import { openCamera, scanRegion } from '../public/camera.js'
 
 function device(t, { caps, rejectUpgrade = false } = {}) {
   let constraints
@@ -63,4 +63,12 @@ test('a rejected resolution upgrade keeps the working capture and controls', asy
   await camera.setZoom(2)
   assert.deepEqual(track.getConstraints().width, { ideal: 3840 })
   assert.deepEqual(track.getConstraints().height, { ideal: 2160 })
+})
+
+test('scans alternate between the scaled whole view and original centre pixels, within a fixed budget', () => {
+  assert.deepEqual(scanRegion(4032, 3024, 0), { sx: 0, sy: 0, sw: 4032, sh: 3024, w: 1280, h: 960 })
+  assert.deepEqual(scanRegion(4032, 3024, 1), { sx: 1376, sy: 1032, sw: 1280, sh: 960, w: 1280, h: 960 })
+  assert.deepEqual(scanRegion(2160, 3840, 1), { sx: 720, sy: 1280, sw: 720, sh: 1280, w: 720, h: 1280 })
+  // A frame within the budget is always read whole, at its own resolution.
+  assert.deepEqual(scanRegion(1280, 720, 1), { sx: 0, sy: 0, sw: 1280, sh: 720, w: 1280, h: 720 })
 })
